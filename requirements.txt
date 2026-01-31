@@ -1,0 +1,12 @@
+dhanhq
+smartmoneyconcepts
+pandas
+numpy
+vectorbt
+requests
+apscheduler
+python-dotenv
+asyncio
+backtesting
+yfinance
+wheel
