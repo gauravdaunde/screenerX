@@ -96,7 +96,12 @@ python3.9 --version
     ```bash
     nano .env
     ```
-    *Paste your `.env` content here. Save and exit.*
+    *Add your API Key here:*
+    ```env
+    API_KEY=my_secret_password_123
+    TELEGRAM_BOT_TOKEN=...
+    ```
+    *Save and exit.*
 
 ---
 
@@ -134,14 +139,15 @@ Use this for the continuous background monitoring.
 
     [Service]
     User=opc
-    WorkingDirectory=/home/opc/screener
-    ExecStart=/home/opc/screener/venv/bin/python realtime_alerts.py
+    WorkingDirectory=/home/opc/screenerX
+    ExecStart=/home/opc/screenerX/venv/bin/python realtime_alerts.py
     Restart=always
     RestartSec=10
 
     [Install]
     WantedBy=multi-user.target
     ```
+    *(Note: Ensure path is `/home/opc/screenerX` if that's your folder name)*
 
 3.  **Start Service**:
     ```bash
@@ -155,21 +161,32 @@ Use this for the continuous background monitoring.
 ## Option C: Run FastAPI Server (Systemd Service)
 Use this to expose the API.
 
-1.  **Open Firewall Port (8000)**:
+1.  **Open Local Firewall Port (8000)**:
     Required to access the API from the internet.
     ```bash
-    # Open port 8000 in local firewall
+    # Open port 8000 on the server itself
     sudo firewall-cmd --permanent --add-port=8000/tcp
     sudo firewall-cmd --reload
     ```
-    *Note: You also need to add an Ingress Rule in the Oracle Cloud Console (VCN -> Security List) to allow TCP traffic on port 8000 from 0.0.0.0/0.*
+    
+2.  **Open Oracle Cloud "Ingress Rule" (CRITICAL)**:
+    * Even if the server firewall is open, Oracle blocks ports by default.
+    *   Go to **OCI Console** -> **Instances** -> Click your instance.
+    *   Click on the **Subnet** (e.g., `subnet-2023...`).
+    *   Click on the **Security List** (e.g., `Default Security List for...`).
+    *   Click **Add Ingress Rules**.
+    *   **Source CIDR**: `0.0.0.0/0`
+    *   **IP Protocol**: `TCP`
+    *   **Destination Port Range**: `8000`
+    *   Click **Add Ingress Rules**.
 
-2.  **Create Service File**:
+3.  **Create Service File**:
     ```bash
     sudo nano /etc/systemd/system/screener-api.service
     ```
 
-3.  **Configuration**:
+4.  **Configuration**:
+    *(We use 'python -m uvicorn' instead of just 'uvicorn' to avoid permission issues)*
     ```ini
     [Unit]
     Description=Screener API
@@ -177,8 +194,8 @@ Use this to expose the API.
 
     [Service]
     User=opc
-    WorkingDirectory=/home/opc/screener
-    ExecStart=/home/opc/screener/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
+    WorkingDirectory=/home/opc/screenerX
+    ExecStart=/home/opc/screenerX/venv/bin/python -m uvicorn api:app --host 0.0.0.0 --port 8000
     Restart=always
     RestartSec=10
 
@@ -186,30 +203,46 @@ Use this to expose the API.
     WantedBy=multi-user.target
     ```
 
-4.  **Start Service**:
+5.  **Start Service**:
     ```bash
     sudo systemctl daemon-reload
     sudo systemctl enable screener-api
     sudo systemctl start screener-api
     ```
 
-5.  **Access**:
+6.  **Access**:
     Visit `http://<YOUR_INSTANCE_IP>:8000/docs` to see the API Swagger UI.
+    
+    **How to Authenticate**:
+    1.  Click "Authorize" in Swagger UI.
+    2.  Enter your `API_KEY` (from `.env`).
+    3.  Alternatively, use CURL:
+        ```bash
+        curl -H "access_token: MY_SECRET_KEY" http://<IP>:8000/results
+        ```
 
 ---
 
 ## Troubleshooting
 
-### "Out of Capacity"
-If you cannot create an **Ampere A1** instance:
-1.  **Try the AMD Shape**: Select **VM.Standard.E2.1.Micro**. It is less powerful but sufficient if you **create a swap file** (Step 3a).
-2.  **Automated Retries**: Capacity fluctuates. You can manually try creating the instance later.
+### "Permission denied" on EXEC
+1.  **Grant Execution Permissions**:
+    ```bash
+    sudo chown -R opc:opc /home/opc/screenerX
+    chmod -R 755 /home/opc/screenerX
+    ```
+2.  **Fix SELinux Context (CRITICAL FIX)**:
+    ```bash
+    sudo chcon -R -t bin_t /home/opc/screenerX/venv/bin/
+    ```
+3.  **Restart Service**:
+    ```bash
+    sudo systemctl restart screener-api
+    ```
 
-### "Public IP Missing"
-If your instance does not have a Public IP:
-1.  **Cause**: You likely missed the **"Assign a public IPv4 address"** checkbox during creation.
-2.  **Fix**: It is easiest to **Terminate** the instance and create a new one.
-3.  **During Re-Creation**:
-    *   Under **Networking**, ensure you are in a **Public Subnet**.
-    *   Look for the **"Assign a public IPv4 address"** option and ensure it is selected.
-    *   (Sometimes this is inside the "Edit" section of the Networking panel).
+### "Netstat returns Null" (Service Not Running)
+1.  **Check Status**: `sudo systemctl status screener-api`
+2.  **Install Deps**: `pip install -r requirements.txt` (inside venv).
+
+### "Site Can't Be Reached" (Timeout)
+1.  **Check OCI Security List**: Add Ingress Rule for Port 8000 (0.0.0.0/0).
