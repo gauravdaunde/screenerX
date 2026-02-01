@@ -1,217 +1,107 @@
-# 📈 VWAP Trading Strategy Screener
+# 📈 AlgoSwing: Automated Swing Trading System
 
-A production-ready automated trading system for Indian stocks (NSE) using VWAP breakout strategy with Dhan API integration.
+A robust, production-ready swing trading system for **Nifty 50** stocks. It utilizes multiple strategies to identify high-probability setups and sends actionable alerts via Telegram or executes trades via the Dhan API.
 
-## ✨ Features
+## ✨ Key Features
 
-| Feature | Status |
-|---------|--------|
-| 📊 VWAP Breakout Strategy | ✅ Optimized |
-| 🔍 Nifty 50 Scanner | ✅ Ready |
-| 🤖 Auto-Trading (Dhan API) | ✅ Ready |
-| 📱 Telegram Alerts | ✅ Working |
-| 📈 Backtesting | ✅ Available |
-| 🧪 Sandbox Mode | ✅ Default |
+| Component | Description | Status |
+|-----------|-------------|--------|
+| **Scanner** | Scans Nifty 50 + Indices daily | ✅ Active |
+| **Strategy 1** | **SuperTrend + Pivot Breakout** (Trend Following) | ✅ Active |
+| **Strategy 2** | **Bollinger Band Mean Reversion** (Dip Buying) | ✅ Active |
+| **Alerts** | Consolidated Telegram Reports | ✅ Active |
+| **Execution** | Automated Order Placement (Dhan API) | 🚧 Beta |
+| **Backtesting**| 2-Year Historical Validation | ✅ Verified |
 
 ---
 
 ## 🚀 Quick Start
 
 ### 1. Installation
-
 ```bash
-# Clone and setup
+# Clone the repository
+git clone <repo-url>
 cd screener
-python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate on Windows
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Configuration
-
-Create `.env` file:
+### 2. Configuration (`.env`)
+Create a `.env` file in the root directory:
 ```env
-# Dhan API (get from api.dhan.co)
-DHAN_CLIENT_ID=your_client_id
-DHAN_ACCESS_TOKEN=your_access_token
+# Dhan API (for live trading)
+DHAN_CLIENT_ID=your_id
+DHAN_ACCESS_TOKEN=your_token
 
-# Telegram (get from @BotFather)
+# Telegram Alerts (Required)
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 ```
 
-### 3. Run
+### 3. Usage
 
+#### ▶️ Run Daily Scan (Manual)
+Run the central scanner to check all Nifty 50 stocks for potential setups:
 ```bash
-# Scan Nifty 50 for signals
-python nifty50_scanner.py
-
-# Auto-trade (DRY RUN by default)
-python auto_trader.py
-
-# Backtest strategy
-python nifty50_analysis.py
+python main.py
 ```
+*This will fetch the latest data, run both strategies, and send a consolidated report to your Telegram.*
+
+#### ⏰ Automate Daily Scans
+To run this automatically every day at market close:
+👉 [See AUTOMATION.md](./AUTOMATION.md)
 
 ---
 
-## 📊 Strategy: VWAP Breakout
+## 📊 Strategies Explained
 
-### Logic
-```
-BUY Signal:  Price crosses ABOVE VWAP AND Close > EMA(13)
-SELL Signal: Price crosses BELOW VWAP AND Close < EMA(13)
-Stop-Loss:   1.5 × ATR below/above entry
-Target:      2 × Risk (1:2 R:R ratio)
-```
+### 1. SuperTrend + Pivot Breakout
+*   **Type:** Trend Following (Momentum)
+*   **Goal:** Catch big moves when a trend is establishing.
+*   **Buy Logic:**
+    *   Price > SuperTrend (Trend is UP)
+    *   Price breaks ABOVE Pivot R1 Level
+    *   Volume > Average Volume
+*   **Exit:** Trailing Stop Loss (SuperTrend) or Target (3R).
 
-### Optimized Parameters
-| Parameter | Value | Found By |
-|-----------|-------|----------|
-| VWAP Period | 10 | Backtesting |
-| EMA Period | 13 | Backtesting |
-| R:R Ratio | 2.0 | Optimization |
-
-### Performance (6-month backtest)
-- **Win Rate:** ~50-60%
-- **Best on:** RELIANCE, TCS, HDFCBANK
-- **Timeframe:** Daily (1d)
+### 2. Bollinger Band Mean Reversion
+*   **Type:** Contrarian (Dip Buying)
+*   **Goal:** Buy high-quality stocks at a discount during corrections.
+*   **Buy Logic:**
+    *   Price touches **Lower Bollinger Band** (Oversold)
+    *   **Confirmation:** Stock is in a long-term Uptrend (Price > 200 SMA)
+    *   RSI is not in extreme panic (<20).
+*   **Target:** Return to Mean (20 SMA).
 
 ---
 
-## 🤖 Auto-Trading System
-
-### Architecture
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  YFinance Data  │────▶│  VWAP Scanner   │────▶│   Dhan API      │
-│  (Historical)   │     │  (Signal Gen)   │     │  (Order Exec)   │
-└─────────────────┘     └────────┬────────┘     └────────┬────────┘
-                                 │                       │
-                                 ▼                       ▼
-                        ┌─────────────────┐     ┌─────────────────┐
-                        │ Position Sizing │     │ Telegram Alert  │
-                        │ (2% Risk Mgmt)  │     │ (Notifications) │
-                        └─────────────────┘     └─────────────────┘
-```
-
-### Configuration
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `CAPITAL_PER_TRADE` | ₹1,00,000 | Full capital per trade |
-| `MAX_RISK_PER_TRADE` | 2% | Maximum risk per trade |
-| `MAX_ORDERS_PER_DAY` | 3 | Daily order limit |
-| `DRY_RUN` | True | Paper trading mode |
-
-### Modes
-
-| Mode | Setting | Description |
-|------|---------|-------------|
-| 🧪 Sandbox | Default | Uses Dhan sandbox (fake money) |
-| 📝 Dry Run | `DRY_RUN=True` | Simulates without API calls |
-| 🔴 Live | `DRY_RUN=False` + Prod API | Real money trading |
-
----
-
-## 📁 Project Structure
+## 📁 System Architecture
 
 ```
 screener/
-├── auto_trader.py        # 🤖 Main auto-trading system
-├── nifty50_scanner.py    # 🔍 Nifty 50 signal scanner
-├── nifty50_analysis.py   # 📊 6-month backtest analysis
-├── backtest_runner.py    # 🧪 Backtesting engine
-├── data_fetcher.py       # 📥 Data fetching (YFinance/Dhan)
-├── config.py             # ⚙️ Configuration
-├── strategies/
-│   ├── base.py           # Base strategy class
-│   ├── vwap_breakout.py  # 📈 VWAP strategy (primary)
-│   └── rsi_divergence.py # 📉 RSI strategy (secondary)
-├── .env                  # 🔑 API credentials
-└── requirements.txt      # 📦 Dependencies
+├── main.py                     # 🧠 CENTRAL COMMAND (Entry Point)
+├── daily_swing_scan.py         # 🔍 Scanning Logic
+├── auto_trader.py              # 🤖 Order Execution (Dhan API)
+├── swing_strategies/           # 📚 Strategy Library
+│   ├── supertrend_pivot.py     #    - SuperTrend Logic
+│   ├── indicators.py           #    - Math Helpers
+│   └── __init__.py             #    - Data Fetcher & Constants
+├── data_fetcher.py             # 📥 Data Utility
+├── supertrend_pivot_backtest.py# 🧪 Backtesting Engine
+└── AUTOMATION.md               # ⚙️ Cron Job Guide
 ```
 
 ---
 
-## 📱 Telegram Alerts
-
-### Setup
-1. Create bot via [@BotFather](https://t.me/BotFather)
-2. Get your Chat ID via [@userinfobot](https://t.me/userinfobot)
-3. Add to `.env`
-
-### Alert Examples
-
-**Signal Alert:**
-```
-🟢 BUY SIGNAL - RELIANCE
-
-📊 Strategy: VWAP_V10_E13
-💰 Entry: ₹1,400.00
-🛑 Stop Loss: ₹1,375.00
-🎯 Target: ₹1,450.00
-```
-
-**Order Alert:**
-```
-🟢 ORDER PLACED
-
-📈 Symbol: RELIANCE
-📦 Quantity: 71 shares
-💰 Entry: ₹1,400.00
-🔖 Order ID: 712601312011
-```
-
----
-
-## 🔧 API Reference
-
-### Dhan API
-- **Sandbox:** `https://sandbox.dhan.co/v2` (default)
-- **Production:** `https://api.dhan.co/v2`
-- **Docs:** [DhanHQ API](https://dhanhq.co/docs/v2/)
-
-### Switching to Production
-1. Get production token from [api.dhan.co](https://api.dhan.co)
-2. Update `.env` with new `DHAN_ACCESS_TOKEN`
-3. Set `DRY_RUN = False` in `auto_trader.py`
-
----
-
-## 📊 Scripts Reference
-
-| Script | Purpose | Usage |
-|--------|---------|-------|
-| `auto_trader.py` | Auto-trading system | `python auto_trader.py` |
-| `nifty50_scanner.py` | Scan for signals | `python nifty50_scanner.py` |
-| `nifty50_analysis.py` | 6-month backtest | `python nifty50_analysis.py` |
-| `optimize_params.py` | Parameter optimization | `python optimize_params.py` |
-| `mock_order_test.py` | Test order flow | `python mock_order_test.py` |
-
----
-
-## ⚠️ Disclaimer
-
-**This software is for educational purposes only.**
-
-- Past performance does not guarantee future results
-- Trading involves significant risk of loss
-- Always paper trade before using real money
-- The authors are not responsible for any financial losses
-
----
+## ⚠️ Risk Disclaimer
+This software is for educational purposes only. Algo-trading involves significant financial risk.
+*   **Do not** enable live trading without thorough paper trading first.
+*   The authors are not responsible for any financial losses.
 
 ## 📝 License
-
-MIT License - Use at your own risk.
-
----
-
-## 🔄 Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0.0 | Feb 2026 | Initial release with VWAP strategy |
-| 1.1.0 | Feb 2026 | Added Dhan API integration |
-| 1.2.0 | Feb 2026 | Telegram alerts & auto-trading |
+MIT License.

@@ -1,42 +1,44 @@
+#!/usr/bin/env python3
 """
-Main Scanner Script.
+🚀 MAIN TRADING SYSTEM CONTROLLER
 
-Runs RSI Divergence and VWAP Breakout strategies on specified symbols.
+Central command for the Swing Trading System.
+Features:
+- Scans NIFTY 50 + Indices
+- Runs SuperTrend Pivot + BB Mean Reversion Strategies
+- Generates Consolidated Telegram Report
 """
 
-from backtest_runner import run_backtest
-from strategies.rsi_divergence import RSIDivergenceStrategy
-from strategies.vwap_breakout import VWAPStrategy
+from datetime import datetime
+from swing_strategies import NIFTY50
+from daily_swing_scan import get_swing_signals, send_telegram_report
 
-# Symbols to scan
-SYMBOLS = [
-    "^NSEI",      # Nifty 50
-    "^NSEBANK",   # Bank Nifty
-    "RELIANCE",
-    "TCS",
-    "HDFCBANK",
-    "INFY",
-    "ICICIBANK"
-]
+# Add Indices to the scan list
+WATCHLIST = ["^NSEI", "^NSEBANK"] + NIFTY50
 
-STRATEGIES = [
-    RSIDivergenceStrategy,
-    VWAPStrategy
-]
-
-def main():
-    print("=" * 50)
-    print("  MARKET SCANNER: RSI Divergence + VWAP Breakout")
-    print("=" * 50)
+def run_daily_scan():
+    """Run the daily swing trading scan."""
+    print("=" * 60)
+    print(f"🚀 MAIN SCANNER STARTED ({datetime.now().strftime('%Y-%m-%d %H:%M')})")
+    print(f"Scanning {len(WATCHLIST)} symbols (Nifty50 + Indices)...")
+    print("=" * 60)
     
-    for symbol in SYMBOLS:
-        print(f"\n--- {symbol} ---")
-        for strat_cls in STRATEGIES:
-            run_backtest(symbol, strat_cls, output_dir="scan_reports")
+    # 1. Run Swing Scan
+    signals = get_swing_signals(WATCHLIST)
     
-    print("\n" + "=" * 50)
-    print("Scan complete. Reports saved to 'scan_reports/'")
-    print("=" * 50)
+    print("\n\n✅ Scan Complete.")
+    
+    if signals:
+        print(f"\nFound {len(signals)} signals!")
+        for s in signals:
+            print(f"  • {s['symbol']} ({s['strategy']}) -> {s['signal']}")
+    else:
+        print("\nNo signals found today.")
+    
+    # 2. Send Report
+    send_telegram_report(signals)
+    print("\n📩 Telegram report sent.")
+    print("=" * 60)
 
 if __name__ == "__main__":
-    main()
+    run_daily_scan()
