@@ -3,9 +3,9 @@ import logging
 import config
 
 class AlertBot:
-    def __init__(self):
-        self.token = config.TELEGRAM_BOT_TOKEN
-        self.chat_id = config.TELEGRAM_CHAT_ID
+    def __init__(self, token=None, chat_id=None):
+        self.token = token or config.TELEGRAM_BOT_TOKEN
+        self.chat_id = chat_id or config.TELEGRAM_CHAT_ID
         self.base_url = f"https://api.telegram.org/bot{self.token}"
 
     def send_message(self, text):
