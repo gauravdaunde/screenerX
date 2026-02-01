@@ -96,12 +96,20 @@ python3.9 --version
     ```bash
     nano .env
     ```
-    *Add your API Key here:*
+    *Add your API Keys here:*
     ```env
     API_KEY=my_secret_password_123
     TELEGRAM_BOT_TOKEN=...
+    TELEGRAM_HEALTH_BOT_TOKEN=... (Create a 2nd bot for system alerts)
+    TELEGRAM_CHAT_ID=...
     ```
     *Save and exit.*
+    
+4.  **Initialize Database (Production Mode)**:
+    This sets up SQLite WAL (Write-Ahead-Log) mode for better concurrency.
+    ```bash
+    python3 trade_db.py
+    ```
 
 ---
 
@@ -119,6 +127,10 @@ Use this for the daily scheduled scan.
     ```bash
     # Run daily scanner at 10:15 UTC (15:45 IST) Mon-Fri
     15 10 * * 1-5 cd /home/opc/screener && /home/opc/screener/venv/bin/python main.py >> scanner.log 2>&1
+    
+    # [NEW] Run Trade Monitor every 15 minutes (Mon-Fri 9:15-15:30 IST)
+    # UTC: 03:45 to 10:00
+    */15 3-10 * * 1-5 cd /home/opc/screener && /home/opc/screener/venv/bin/python trade_manager.py >> trade_monitor.log 2>&1
     ```
 
 ---
@@ -211,15 +223,8 @@ Use this to expose the API.
     ```
 
 6.  **Access**:
-    Visit `http://<YOUR_INSTANCE_IP>:8000/docs` to see the API Swagger UI.
-    
-    **How to Authenticate**:
-    1.  Click "Authorize" in Swagger UI.
-    2.  Enter your `API_KEY` (from `.env`).
-    3.  Alternatively, use CURL:
-        ```bash
-        curl -H "access_token: MY_SECRET_KEY" http://<IP>:8000/results
-        ```
+    *   **Dashboard**: `http://<YOUR_IP>:8000/portfolio?token=YOUR_API_KEY`
+    *   **API Docs**: `http://<YOUR_IP>:8000/docs` (Use 'Authorize' button)
 
 ---
 
@@ -240,9 +245,13 @@ Use this to expose the API.
     sudo systemctl restart screener-api
     ```
 
-### "Netstat returns Null" (Service Not Running)
-1.  **Check Status**: `sudo systemctl status screener-api`
-2.  **Install Deps**: `pip install -r requirements.txt` (inside venv).
+### "DatabaseError: no such table: trades"
+1.  **Run Initialization**:
+    ```bash
+    cd ~/screenerX
+    source venv/bin/activate
+    python3 trade_db.py
+    ```
 
 ### "Site Can't Be Reached" (Timeout)
 1.  **Check OCI Security List**: Add Ingress Rule for Port 8000 (0.0.0.0/0).
