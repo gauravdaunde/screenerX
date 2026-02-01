@@ -10,3 +10,5 @@ asyncio
 backtesting
 yfinance
 wheel
+fastapi
+uvicorn
