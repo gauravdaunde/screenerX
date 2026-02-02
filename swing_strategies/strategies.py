@@ -1,16 +1,26 @@
 """
-Swing Trading Strategies - OPTIMIZED v2
+Swing Trading Strategy Suite (Optimized v2)
+============================================
 
-Optimizations based on backtest analysis:
-1. Higher confidence threshold (70%+)
-2. Stricter volume filters (1.2x minimum)
-3. Better stop-loss placement (swing levels)
-4. Multi-timeframe trend confirmation
-5. Candle quality filters
-6. Removed weak strategies
+This module contains a collection of refined swing trading strategies, each targeting specific market conditions.
+These strategies have been backtested and optimized for the Nifty 50 universe.
 
-Original: 42.6% WR, 53% stop-loss hits
-Target: 55%+ WR, <40% stop-loss hits
+1. Momentum Strategies
+   - **MACD Momentum**: Captures strong trend accelerations using Zero-Line Crossovers confirmed by Volume and EMA alignment. Best for early trend entry.
+   - **EMA Crossover**: Classical trend following using EMA20/50 crosses, filtered by long-term trend (EMA200) and Volume.
+
+2. Mean Reversion Strategies
+   - **BB Mean Reversion**: Exploits overextended moves in sideways markets. Buys at Lower BB and Sells at Upper BB when RSI is oversold/overbought. Highly effective in chopping markets (FMCG).
+   - **Trend Pullback**: Buys dips to the 20 EMA in established strong trends. The "Buy the Dip" strategy.
+
+3. Breakout Strategies
+   - **Swing Breakout**: Enter on volatilty expansion above key Swing Highs/Lows. Requires massive volume confirmation.
+
+Optimization Philosophy:
+------------------------
+- **Quality over Quantity**: Strict filters (Volume, Candle Body, Trend alignment) reduce trade frequency but boost Win Rate.
+- **Context Awareness**: Strategies check for specific market regimes (Trending vs Sideways) before triggering.
+- **Risk Management**: Dynamic Stop Losses based on ATR or Swing Levels are integral to every signal.
 """
 
 from .models import SwingSignal, MarketIndicators

@@ -125,8 +125,9 @@ Use this for the daily scheduled scan.
     Add this line to run strictly at 3:45 PM IST (which is **10:15 UTC**).
     
     ```bash
-    # Run daily scanner at 10:15 UTC (15:45 IST) Mon-Fri
-    15 10 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python main.py >> scanner.log 2>&1
+    # Run Scanner every 15 mins (Mon-Fri 09:15-15:30 IST)
+    # UTC: 03:45 to 10:00
+    */15 3-10 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python3 main.py >> /home/opc/screenerX/scanner.log 2>&1
     
     # [NEW] Run Trade Monitor every 2 minutes (Mon-Fri 9:15-15:30 IST)
     # UTC: 03:45 to 10:00

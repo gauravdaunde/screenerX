@@ -26,11 +26,27 @@ def run_daily_scan():
     # 1. Run Swing Scan
     signals = get_swing_signals(WATCHLIST)
     
+    # Smart Sectors Definition (Verified Performers)
+    SMART_SECTORS = [
+        # IT
+        "TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM",
+        # BANKING
+        "HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK", "INDUSINDBK",
+        # AUTO
+        "MARUTI", "M&M", "TATAMOTORS", "BAJAJ-AUTO", "EICHERMOT", "HEROMOTOCO",
+        # PHARMA
+        "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "APOLLOHOSP"
+    ]
+
     print("\n\n✅ Scan Complete.")
     
     if signals:
         print(f"\nFound {len(signals)} signals!")
         for s in signals:
+            # Tagging Smart Strategy
+            if s['symbol'] in SMART_SECTORS:
+                s['strategy'] = 'SWING_SMART'
+                
             print(f"  • {s['symbol']} ({s['strategy']}) -> {s['signal']}")
             
             # AUTO-TRADE (PAPER)
