@@ -1,8 +1,8 @@
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
-from trade_db import get_connection, log_trade, get_balance, update_balance, close_trade_in_db
-from realtime_alerts import AlertManager # Reuse for Telegram
+from trade_db import get_connection, log_trade, get_balance, close_trade_in_db
+from alerts import AlertBot # Reuse for Telegram
 
 # Configuration
 CAPITAL_STOCK = 100000.0
@@ -10,7 +10,7 @@ CAPITAL_OPTION = 100000.0
 MAX_TRADES_PER_TYPE = 5 
 PER_TRADE_LIMIT = CAPITAL_STOCK / MAX_TRADES_PER_TYPE # 20k
 
-alert_manager = AlertManager()
+alert_bot = AlertBot()
 
 def get_open_trades(instrument_type=None):
     conn = get_connection()
@@ -79,13 +79,13 @@ def execute_trade(signal):
     
     # Send Telegram
     msg = f"🆕 <b>TRADE EXECUTED (PAPER)</b>\n\n🟢 BUY {symbol}\nQty: {qty}\nPrice: {price}\nSL: {sl}\nTP: {tp}"
-    alert_manager.send_telegram(msg)
+    alert_bot.send_message(msg)
 
 
 def monitor_positions():
     """
     Check open positions against current price.
-    Run this every 15 mins.
+    Run this every 2 mins.
     """
     trades = get_open_trades()
     if trades.empty:
@@ -97,7 +97,7 @@ def monitor_positions():
     for index, row in trades.iterrows():
         symbol = row['symbol']
         trade_id = row['id']
-        entry_price = row['entry_price']
+        # entry_price not needed (was row['entry_price'])
         sl = row['sl']
         tp = row['tp']
         signal_type = row['signal_type'] # BUY
@@ -126,7 +126,7 @@ def monitor_positions():
                 # Telegram Alert
                 emoji = "🟢" if pnl > 0 else "🔴"
                 msg = f"{exit_reason}\n\n{emoji} Closed {symbol}\nPrice: {current_price}\nPnL: ₹{pnl:.2f}"
-                alert_manager.send_telegram(msg)
+                alert_bot.send_message(msg)
                 
         except Exception as e:
             print(f"Error checking {symbol}: {e}")
