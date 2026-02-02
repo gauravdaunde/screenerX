@@ -106,10 +106,21 @@ def monitor_positions():
         try:
             ticker = f"{symbol}.NS"
             data = yf.download(ticker, period="1d", interval="15m", progress=False)
-            if data.empty: 
+            
+            # YFinance fix: Check if empty
+            if data is None or data.empty: 
+                print(f"No data for {symbol}")
                 continue
                 
-            current_price = data['Close'].iloc[-1]
+            # Extract scalar price (Handle Series/DataFrame ambiguity)
+            try:
+                # Use .iloc[-1] and check if it returns a scalar or Series (which happens with multi-index)
+                close_data = data['Close'].iloc[-1]
+                # If close_data is still a Series (e.g. 1-row series), get the item
+                current_price = float(close_data.item()) if hasattr(close_data, 'item') else float(close_data)
+            except Exception as e:
+                print(f"Price extraction error {symbol}: {e}")
+                continue
             
             # Check Exit Conditions (For BUY)
             exit_reason = None
