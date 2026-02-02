@@ -126,11 +126,11 @@ Use this for the daily scheduled scan.
     
     ```bash
     # Run daily scanner at 10:15 UTC (15:45 IST) Mon-Fri
-    15 10 * * 1-5 cd /home/opc/screener && /home/opc/screener/venv/bin/python main.py >> scanner.log 2>&1
+    15 10 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python main.py >> scanner.log 2>&1
     
-    # [NEW] Run Trade Monitor every 15 minutes (Mon-Fri 9:15-15:30 IST)
+    # [NEW] Run Trade Monitor every 2 minutes (Mon-Fri 9:15-15:30 IST)
     # UTC: 03:45 to 10:00
-    */15 3-10 * * 1-5 cd /home/opc/screener && /home/opc/screener/venv/bin/python trade_manager.py >> trade_monitor.log 2>&1
+    */2 3-10 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python trade_manager.py >> /home/opc/screenerX/trade_monitor.log 2>&1
     ```
 
 ---
