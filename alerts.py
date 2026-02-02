@@ -19,7 +19,8 @@ class AlertBot:
         url = f"{self.base_url}/sendMessage"
         payload = {
             "chat_id": self.chat_id,
-            "text": text
+            "text": text,
+            "parse_mode": "HTML"
         }
         
         try:

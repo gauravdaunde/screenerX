@@ -1,16 +1,40 @@
 """
 SuperTrend + Pivot Point Swing Trading Strategy
-Inspired by CA Rachana Ranade's method
+================================================
 
-Combines:
-- SuperTrend indicator (trend direction)
-- Pivot Point breakout levels (entry trigger)
+A robust localized trend-following strategy optimized for high-beta stocks (IT, Banking, Auto).
+This strategy combines trend direction filters with support/resistance breakout triggers.
 
-Holding period: 2-10 days (SWING)
+1. High Level Philosophy:
+   - "Trend is your friend until it bends."
+   - We only trade in the direction of the dominant short-term trend (SuperTrend).
+   - We enter on breakouts of key structural levels (Pivot Points).
+   - We let winners run using a "Smart Trailing" mechanism while cutting losers fast.
+
+2. Core Indicators:
+   - **SuperTrend (10, 3)**: Acts as the primary trend filter.
+     - Green = Only look for LONG setups.
+     - Red = Only look for SHORT setups.
+   - **Pivot Points (Standard)**: Provide objective support (S1, S2) and resistance (R1, R2) levels for entry triggers.
+   - **ATR (Average True Range)**: Used for volatility-adjusted Stop Loss placement.
+
+3. Entry Logic:
+   - **LONG**: Close > R1 AND Previous Close <= R1 (Breakout) + SuperTrend is Bullish.
+   - **SHORT**: Close < S1 AND Previous Close >= S1 (Breakdown) + SuperTrend is Bearish.
+
+4. Exit Rules ("Smart Management" - Optimized Update):
+   - **Initial Stop Loss**: Volatility based (2x ATR).
+   - **Smart Breakeven**: Once price covers 70% of distance to Target, Move SL to Entry (protect capital).
+   - **Smart Trailing**: After hitting the Fixed Target (R2/S2), do NOT exit. Instead, activate a TIGHT trailing stop (1.5%) to capture extended trends (Home Runs).
+   - **Max Hold**: 30 Days (Time-based exit if trend stalls).
+
+5. Best Fit:
+   - Stocks: Nifty 50 High Beta (TCS, INFY, RELIANCE, HDFCBANK).
+   - sectors: IT, Banking, Auto.
+   - AVOID: Low beta FMCG stocks (HINDUNILVR, ITC).
 """
 
 import pandas as pd
-import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
