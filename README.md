@@ -48,9 +48,16 @@ TELEGRAM_CHAT_ID=your_chat_id
 #### ▶️ Run Daily Scan (Manual)
 Run the central scanner to check all Nifty 50 stocks for potential setups:
 ```bash
-python main.py
+python -m app.cron.scan
 ```
 *This will fetch the latest data, run both strategies, and send a consolidated report to your Telegram.*
+
+#### 🌐 Run API Server
+Start the dashboard and API:
+```bash
+uvicorn app.main:app --reload
+```
+Visit http://localhost:8000/portfolio to see the dashboard.
 
 #### ⏰ Automate Daily Scans
 To run this automatically every day at market close:
@@ -84,15 +91,18 @@ To run this automatically every day at market close:
 
 ```
 screener/
-├── main.py                     # 🧠 CENTRAL COMMAND (Entry Point)
-├── daily_swing_scan.py         # 🔍 Scanning Logic
+├── app/                        # 📦 Application Core
+│   ├── main.py                 #    - API Entry Point
+│   ├── cron/                   #    - Scheduled Tasks (Scan)
+│   ├── api/                    #    - API Routers
+│   ├── services/               #    - Business Logic
+│   ├── db/                     #    - Database Logic
+│   └── core/                   #    - Configuration
 ├── auto_trader.py              # 🤖 Order Execution (Dhan API)
 ├── swing_strategies/           # 📚 Strategy Library
 │   ├── supertrend_pivot.py     #    - SuperTrend Logic
-│   ├── indicators.py           #    - Math Helpers
-│   └── __init__.py             #    - Data Fetcher & Constants
-├── data_fetcher.py             # 📥 Data Utility
-├── supertrend_pivot_backtest.py# 🧪 Backtesting Engine
+│   └── ...
+├── legacy/                     # 🏚️ Old Monolithic Files
 └── AUTOMATION.md               # ⚙️ Cron Job Guide
 ```
 
