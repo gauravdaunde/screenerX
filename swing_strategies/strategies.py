@@ -595,8 +595,11 @@ def strategy_swing_breakout(symbol: str, ind: MarketIndicators) -> SwingSignal:
 # ============================================================================
 
 ALL_STRATEGIES = [
-    strategy_bb_mean_reversion,  # 61.9% WR, +1.16% avg - BEST
-    strategy_trend_pullback,     # 50.9% WR, +0.11% avg - PROFITABLE
+    strategy_macd_momentum,
+    strategy_bb_mean_reversion,
+    strategy_ema_crossover,
+    strategy_trend_pullback,
+    strategy_swing_breakout
 ]
 
 # REMOVED (Negative returns in backtest):

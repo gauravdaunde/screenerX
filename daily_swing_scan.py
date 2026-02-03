@@ -26,48 +26,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
-def calculate_bb_signal(symbol: str, df: pd.DataFrame):
-    """
-    Check for BB Mean Reversion Signal.
-    """
-    # Manual BB Calculation (No dependency)
-    df['ma20'] = df['close'].rolling(20).mean()
-    df['std20'] = df['close'].rolling(20).std()
-    df['upper'] = df['ma20'] + (2 * df['std20'])
-    df['lower'] = df['ma20'] - (2 * df['std20'])
-    
-    # Trend Filter (200 SMA)
-    df['sma200'] = df['close'].rolling(200).mean()
-    
-    current_price = df['close'].iloc[-1]
-    lower_band = df['lower'].iloc[-1]
-    upper_band = df['upper'].iloc[-1]
-    sma200 = df['sma200'].iloc[-1]
-    
-    # 1. Dip Buy (Oversold in Uptrend is best, but pure reversion works too)
-    if current_price <= lower_band * 1.015:  # Within 1.5% of lower band
-        confidence = 0.6
-        reasons = ["Price near Lower BB"]
-        
-        # Boost confidence if in uptrend
-        if not pd.isna(sma200) and current_price > sma200:
-            confidence += 0.2
-            reasons.append("Major Uptrend Support")
-            
-        return {
-            "symbol": symbol,
-            "strategy": "BB Mean Reversion",
-            "signal": "BUY",
-            "price": current_price,
-            "stop_loss": current_price * 0.97,  # 3% SL
-            "target": df['ma20'].iloc[-1],      # Target Mid Band
-            "confidence": confidence,
-            "reason": ", ".join(reasons)
-        }
-        
-    return None
-
-
 def send_telegram_report(signals):
     """Send consolidated report to Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -91,11 +49,14 @@ def send_telegram_report(signals):
             message += f"<b>📌 {strat}</b>\n"
             for s in items:
                 emoji = "🟢" if s['signal'] == "BUY" else "🔴"
-                conf_icon = "🔥" if s['confidence'] >= 0.8 else "✨"
+                conf_icon = "🔥" if s.get('confidence', 0) >= 0.8 else "✨"
+                qty = s.get('quantity', 0)
+                inv = s.get('invested_value', 0)
                 
-                message += f"{emoji} <b>{s['symbol']}</b> @ ₹{s['price']:,.0f}\n"
-                message += f"   SL: ₹{s['stop_loss']:,.0f} | TGT: ₹{s['target']:,.0f}\n"
-                message += f"   Reason: {s['reason']} ({int(s['confidence']*100)}% {conf_icon})\n\n"
+                message += f"{emoji} <b>{s['symbol']}</b> @ ₹{s['price']:,.2f}\n"
+                message += f"   Qty: {qty} | Amt: ₹{inv/1000:.1f}k\n"
+                message += f"   SL: ₹{s['stop_loss']:,.2f} | TGT: ₹{s['target']:,.2f}\n"
+                message += f"   Reason: {s['reason']} ({int(s.get('confidence',0)*100)}% {conf_icon})\n\n"
             message += "----------------------------\n"
             
         message += "⚠️ <i>Algo-generated. DYOR.</i>"
@@ -112,47 +73,59 @@ def send_telegram_report(signals):
 
 def get_swing_signals(symbols):
     """
-    Run swing strategies on a list of symbols.
-    Returns list of signal dictionaries.
+    Run ALL swing strategies on a list of symbols.
+    Returns list of signal dictionaries with 100k allocation sizing.
     """
+    from swing_strategies.dispatcher import swing_strategy_dispatcher
+    
     all_signals = []
     total = len(symbols)
+    CAPITAL_PER_TRADE = 100000
     
     for idx, symbol in enumerate(symbols):
         print(f"\r[{idx+1}/{total}] Scanning {symbol:<15}", end="", flush=True)
         
         try:
-            # Fetch 1y data to ensure SMA200 can be calculated
+            # Fetch data once (shared)
             df = fetch_stock_data(symbol, period="1y")
             if df.empty or len(df) < 50:
                 continue
 
-            # --- STRATEGY 1: SuperTrend Pivot --- 
+            # --- 1. EXISTING: SuperTrend Pivot --- 
             st_signal = scan_supertrend(symbol, df)
             if st_signal and st_signal['signal'] in ['BUY', 'SELL']:
-                # Normalize format
-                if st_signal['confidence'] >= 0.5: # Min threshold
-                    all_signals.append({
-                        "symbol": symbol,
-                        "strategy": "SuperTrend Pivot",
-                        "signal": st_signal['signal'],
-                        "price": st_signal['entry_price'],
-                        "stop_loss": st_signal['stop_loss'],
-                        "target": st_signal['target'],
-                        "confidence": st_signal['confidence'],
-                        "reason": st_signal['reason']
-                    })
+                if st_signal['confidence'] >= 0.5:
+                    st_signal['strategy'] = "SuperTrend Pivot" # Ensure name
+                    # Add sizing
+                    price = st_signal['entry_price']
+                    qty = int(CAPITAL_PER_TRADE / price) if price > 0 else 0
+                    st_signal['quantity'] = qty
+                    st_signal['invested_value'] = qty * price
+                    all_signals.append(st_signal)
 
-            # --- STRATEGY 2: BB Mean Reversion ---
-            bb_signal = calculate_bb_signal(symbol, df)
-            if bb_signal:
-                all_signals.append(bb_signal)
+            # --- 2. NEW: Strategy Suite (MACD, BB, EMA, Pullback, Breakout) ---
+            # using the dispatcher which picks the BEST of the suite
+            suite_signal = swing_strategy_dispatcher(df, symbol)
+            
+            if suite_signal and suite_signal.get('signal') != 'HOLD':
+                 # Avoid duplicates if same strategy logic/name
+                 # (Though SuperTrend is distinct from the suite)
+                 
+                 # Add sizing
+                 price = suite_signal.get('entry_price', 0)
+                 if price > 0:
+                     qty = int(CAPITAL_PER_TRADE / price)
+                     suite_signal['quantity'] = qty
+                     suite_signal['invested_value'] = qty * price
+                     suite_signal['price'] = price # Normalize key if needed
+                     all_signals.append(suite_signal)
                 
         except Exception as e:
+            # print(f"Error {symbol}: {e}")
             continue
             
     # Sort by confidence
-    all_signals.sort(key=lambda x: x['confidence'], reverse=True)
+    all_signals.sort(key=lambda x: x.get('confidence', 0), reverse=True)
     return all_signals
 
 
