@@ -1,8 +1,8 @@
 from datetime import datetime
 import pandas as pd
 import yfinance as yf
-from trade_db import get_connection, log_trade, get_balance, close_trade_in_db
-from alerts import AlertBot # Reuse for Telegram
+from app.db.database import get_connection, log_trade, get_balance, close_trade_in_db
+from app.core.alerts import AlertBot  # Reuse for Telegram
 
 # Configuration
 CAPITAL_STOCK = 100000.0  # Old Swing Strategy

@@ -1,18 +1,25 @@
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Any
 
 class Signal(BaseModel):
     symbol: str
-    strategy: str
+    strategy: Optional[str] = None
+    strategy_name: Optional[str] = None
     signal: str
-    price: float
-    stop_loss: float
-    target: float
-    confidence: float
-    reason: str
+    price: Optional[float] = None
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    target: Optional[float] = None
+    confidence: Optional[float] = None
+    reason: Optional[str] = None
+    quantity: Optional[int] = None
+    invested_value: Optional[float] = None
+    
+    class Config:
+        extra = "allow"  # Allow extra fields
 
 class ScanResponse(BaseModel):
     status: str
     timestamp: str
     signals_found: int
-    signals: List[Signal]
+    signals: List[Any]  # Allow any dict structure

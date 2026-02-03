@@ -71,6 +71,14 @@ def get_strategy_balance(strategy: str) -> float:
         bal = c.fetchone()[0]
     return bal
 
+def get_balance() -> float:
+    """Get total available balance across all strategy wallets."""
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute('SELECT COALESCE(SUM(available_balance), 0) FROM strategy_wallets')
+        total = c.fetchone()[0]
+    return total
+
 def update_strategy_balance(strategy: str, amount_change: float):
     ensure_wallet_exists(strategy)
     with get_connection() as conn:

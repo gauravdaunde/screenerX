@@ -5,9 +5,9 @@ This guide provides a comprehensive analysis and step-by-step instructions for d
 ## Analysis & Recommendation
 
 Your project consists of three components:
-1.  **Daily Scanner (`main.py`)**: Scheduled task.
-2.  **Real-Time Alerts (`realtime_alerts.py`)**: Background service.
-3.  **API (`api.py`)**: Web server for manual controls and status.
+1.  **Daily Scanner**: Scheduled task running as a module (`python -m app.cron.scan`).
+2.  **API Server**: FastAPI web server (`uvicorn app.main:app`) for the dashboard.
+3.  **Real-Time Alerts**: (Deprecated in favor of modular cron/services).
 
 ### Recommended Architecture: **OCI Compute Instance (Always Free Tier)**
 We recommend using an **always-free Compute Instance (VM)**.
@@ -102,13 +102,16 @@ python3.9 --version
     TELEGRAM_BOT_TOKEN=...
     TELEGRAM_HEALTH_BOT_TOKEN=... (Create a 2nd bot for system alerts)
     TELEGRAM_CHAT_ID=...
+    DHAN_CLIENT_ID=...
+    DHAN_ACCESS_TOKEN=...
     ```
     *Save and exit.*
     
 4.  **Initialize Database (Production Mode)**:
     This sets up SQLite WAL (Write-Ahead-Log) mode for better concurrency.
+    The new modular system initializes the DB automatically on first run, but you can trigger it manually:
     ```bash
-    python3 trade_db.py
+    python3 -c "from app.db.database import init_db; init_db()"
     ```
 
 ---
@@ -127,7 +130,8 @@ Use this for the daily scheduled scan.
     ```bash
     # Run Scanner every 15 mins (Mon-Fri 09:15-15:30 IST)
     # UTC: 03:45 to 10:00
-    */15 3-10 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python3 main.py >> /home/opc/screenerX/scanner.log 2>&1
+    # NOTE: We use 'python -m app.cron.scan' now
+    */15 3-10 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python3 -m app.cron.scan >> /home/opc/screenerX/scanner.log 2>&1
     
     # [NEW] Run Trade Monitor every 2 minutes (Mon-Fri 9:15-15:30 IST)
     # UTC: 03:45 to 10:00
@@ -136,43 +140,8 @@ Use this for the daily scheduled scan.
 
 ---
 
-## Option B: Run Real-Time Alerts (Systemd Service)
-Use this for the continuous background monitoring.
-
-1.  **Create Service File**:
-    ```bash
-    sudo nano /etc/systemd/system/screener-realtime.service
-    ```
-
-2.  **Configuration**:
-    ```ini
-    [Unit]
-    Description=Screener Real-Time Alerts
-    After=network.target
-
-    [Service]
-    User=opc
-    WorkingDirectory=/home/opc/screenerX
-    ExecStart=/home/opc/screenerX/venv/bin/python realtime_alerts.py
-    Restart=always
-    RestartSec=10
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-    *(Note: Ensure path is `/home/opc/screenerX` if that's your folder name)*
-
-3.  **Start Service**:
-    ```bash
-    sudo systemctl daemon-reload
-    sudo systemctl enable screener-realtime
-    sudo systemctl start screener-realtime
-    ```
-
----
-
 ## Option C: Run FastAPI Server (Systemd Service)
-Use this to expose the API.
+Use this to expose the API and monitoring dashboard.
 
 1.  **Open Local Firewall Port (8000)**:
     Required to access the API from the internet.
@@ -199,7 +168,7 @@ Use this to expose the API.
     ```
 
 4.  **Configuration**:
-    *(We use 'python -m uvicorn' instead of just 'uvicorn' to avoid permission issues)*
+    *(We use 'python -m uvicorn' and point to app.main:app)*
     ```ini
     [Unit]
     Description=Screener API
@@ -208,7 +177,8 @@ Use this to expose the API.
     [Service]
     User=opc
     WorkingDirectory=/home/opc/screenerX
-    ExecStart=/home/opc/screenerX/venv/bin/python -m uvicorn api:app --host 0.0.0.0 --port 8000
+    # Pointing to the new app.main module
+    ExecStart=/home/opc/screenerX/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
     Restart=always
     RestartSec=10
 
@@ -251,8 +221,8 @@ Use this to expose the API.
     ```bash
     cd ~/screenerX
     source venv/bin/activate
-    python3 trade_db.py
+    python3 -c "from app.db.database import init_db; init_db()"
     ```
 
-### "Site Can't Be Reached" (Timeout)
-1.  **Check OCI Security List**: Add Ingress Rule for Port 8000 (0.0.0.0/0).
+### "ModuleNotFoundError: No module named 'app'"
+Ensure your `PYTHONPATH` includes the current directory, or run python with `-m` from the root directory as shown in the guides above.

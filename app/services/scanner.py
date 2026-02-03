@@ -46,11 +46,15 @@ def send_telegram_report(signals):
                 conf_icon = "🔥" if s.get('confidence', 0) >= 0.8 else "✨"
                 qty = s.get('quantity', 0)
                 inv = s.get('invested_value', 0)
+                # Handle both 'price' and 'entry_price' keys
+                price = s.get('price', s.get('entry_price', 0))
+                sl = s.get('stop_loss', 0)
+                tp = s.get('target', 0)
                 
-                message += f"{emoji} <b>{s['symbol']}</b> @ ₹{s['price']:,.2f}\n"
+                message += f"{emoji} <b>{s['symbol']}</b> @ ₹{price:,.2f}\n"
                 message += f"   Qty: {qty} | Amt: ₹{inv/1000:.1f}k\n"
-                message += f"   SL: ₹{s['stop_loss']:,.2f} | TGT: ₹{s['target']:,.2f}\n"
-                message += f"   Reason: {s['reason']} ({int(s.get('confidence',0)*100)}% {conf_icon})\n\n"
+                message += f"   SL: ₹{sl:,.2f} | TGT: ₹{tp:,.2f}\n"
+                message += f"   Reason: {s.get('reason', 'N/A')} ({int(s.get('confidence',0)*100)}% {conf_icon})\n\n"
             message += "----------------------------\n"
             
         message += "⚠️ <i>Algo-generated. DYOR.</i>"
@@ -101,8 +105,9 @@ def get_swing_signals(symbols):
             suite_signal = swing_strategy_dispatcher(df, symbol)
             
             if suite_signal and suite_signal.get('signal') != 'HOLD':
-                 # Avoid duplicates if same strategy logic/name
-                 # (Though SuperTrend is distinct from the suite)
+                 # Normalize 'strategy_name' to 'strategy' for consistency
+                 if 'strategy_name' in suite_signal and 'strategy' not in suite_signal:
+                     suite_signal['strategy'] = suite_signal['strategy_name']
                  
                  # Add sizing
                  price = suite_signal.get('entry_price', 0)
