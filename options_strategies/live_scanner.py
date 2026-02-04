@@ -14,8 +14,42 @@ CAPITAL_ALLOCATION = 100000.0
 BASE_STRATEGY_CATEGORY = "SWING_OPTIONS"
 
 CONFIGS = [
-    IndexConfig("NIFTY", "^NSEI", 25, 500, 200, 50),
-    IndexConfig("BANKNIFTY", "^NSEBANK", 15, 1000, 500, 100)
+    # --- INDICES ---
+    IndexConfig("NIFTY", "^NSEI", 75, 500, 200, 50),
+    IndexConfig("BANKNIFTY", "^NSEBANK", 30, 1000, 500, 100),
+    
+    # --- TOP 10 NIFTY 50 STOCKS (By Weight) ---
+    # Lot Sizes updated for Jan 2025
+    
+    # 1. HDFC Bank (~13%)
+    IndexConfig("HDFCBANK", "HDFCBANK.NS", 550, 30, 10, 10),
+    
+    # 2. Reliance (~9%)
+    IndexConfig("RELIANCE", "RELIANCE.NS", 250, 50, 20, 20),
+    
+    # 3. ICICI Bank (~7%)
+    IndexConfig("ICICIBANK", "ICICIBANK.NS", 1250, 40, 20, 20),
+    
+    # 4. Infosys (~6%)
+    IndexConfig("INFY", "INFY.NS", 400, 40, 20, 20),
+    
+    # 5. ITC (~4%)
+    IndexConfig("ITC", "ITC.NS", 1600, 15, 5, 5),
+    
+    # 6. Larsen & Toubro (~4%)
+    IndexConfig("LT", "LT.NS", 500, 100, 50, 50),
+    
+    # 7. TCS (~4%)
+    IndexConfig("TCS", "TCS.NS", 175, 100, 50, 50),
+    
+    # 8. Axis Bank (~3%)
+    IndexConfig("AXISBANK", "AXISBANK.NS", 625, 30, 10, 10),
+    
+    # 9. Bharti Airtel (~3%)
+    IndexConfig("BHARTIARTL", "BHARTIARTL.NS", 475, 40, 20, 20),
+    
+    # 10. SBI (~3%)
+    IndexConfig("SBIN", "SBIN.NS", 1500, 20, 5, 5)
 ]
 
 # We need a DataManager that is similar to backtest but for live small window
@@ -81,7 +115,10 @@ def run_live_scan():
             prev_row = df.iloc[-2] # Assuming valid
             
             spot = last_row['close']
-            vix = last_row['vix']
+            
+            # Stock VIX Adjustment
+            is_index = cfg.symbol in ["NIFTY", "BANKNIFTY"]
+            vix = last_row['vix'] if is_index else last_row['vix'] * 1.2
             
             strategies = [
                 IronCondor(cfg),
@@ -119,41 +156,21 @@ def run_live_scan():
                     if entry_cost > 0: # Net Credit (Iron Condor)
                          credit_collected = entry_cost * cfg.lot_size
                          
-                         # Theoretical Max Risk (Width - Credit)
-                         theor_risk = ((cfg.width) - entry_cost) * cfg.lot_size 
-                         
-                         # Managed Risk (Stop Loss @ 2x Limit)
-                         # We exit if loss = 2x Premium Collected? No, usually exit if premium doubles.
-                         # Stop Loss = 2 * Credit. Net Loss = Credit (Received) - 2*Credit (Paid to Close) = -Credit.
-                         # Wait, standard "2x Stop" means if we sold for 100, we buy back at 200 (Loss 100).
-                         # Effective Risk = Premium Received.
-                         # If we set stop at 3x, risk is 2x Premium.
-                         
                          # Our Backtest Logic: Stop @ 2.0 * Premium Value (i.e., loss = 2 * Premium)
-                         # Example: Sold @ 1000. Stop when PnL = -2000. (i.e. Buy back @ 3000? No that's extreme).
-                         # Let's clarify: stop_loss amount = max_profit * 2.0
-                         # If Max Profit = 1000. Stop Loss = 2000.
-                         # Risk = 2000. Reward = 1000. R:R = 1:2.
-                         
                          max_profit = credit_collected
-                         managed_risk = max_profit * 2.0 # Based on backtest config
-                         risk_type_label = "Managed Risk (Stop @ 2x)"
+                         managed_risk = max_profit * 2.0 
+                         risk_type_label = "Managed Risk (Stop @ 2x Credit)"
 
                     else: # Net Debit (Spreads)
                          # Debit Spreads usually defined risk = entry cost.
                          entry_cost = abs(entry_cost)
                          total_cost = entry_cost * cfg.lot_size
                          
-                         max_profit = (cfg.width - entry_cost) * cfg.lot_size
-                         
                          # Backtest Logic: Stop @ 50% of Premium Paid.
-                         # Reward: 1.5x Cost.
-                         # Risk: 0.5x Cost.
-                         
                          managed_risk = total_cost * 0.5
                          target_reward = total_cost * 1.5
                          max_profit = target_reward # Display Target Profit, not theoretical max
-                         risk_type_label = "Managed Risk (Stop @ 50%)"
+                         risk_type_label = "Managed Risk (Stop @ 50% Cost)"
 
                     risk_reward = f"Risk: ₹{managed_risk:.0f} | Target: ₹{max_profit:.0f} ({risk_type_label})"
 
@@ -172,8 +189,6 @@ def run_live_scan():
                     # Send
                     alert_bot.send_message(msg)
                     logger.info(f"Alert Sent for {cfg.symbol} {strat.name}")
-                    
-                    # Optional: Log to CSV/DB as 'Detected'
                     
         except Exception as e:
             logger.error(f"Error scanning {cfg.symbol}: {e}")
