@@ -136,6 +136,10 @@ Use this for the daily scheduled scan.
     # [NEW] Run Trade Monitor every 2 minutes (Mon-Fri 9:15-15:30 IST)
     # UTC: 03:45 to 10:00
     */2 3-10 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python trade_manager.py >> /home/opc/screenerX/trade_monitor.log 2>&1
+    
+    # [NEW] Run Options Strategy Scanner Daily at 8:50 AM IST
+    # UTC: 03:20
+    20 3 * * 1-5 cd /home/opc/screenerX && /home/opc/screenerX/venv/bin/python options_strategies/live_scanner.py >> /home/opc/screenerX/options_scanner.log 2>&1
     ```
 
 ---
