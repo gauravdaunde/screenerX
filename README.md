@@ -38,6 +38,12 @@ Create a `.env` file in the root directory:
 DHAN_CLIENT_ID=your_id
 DHAN_ACCESS_TOKEN=your_token
 
+# API Authentication (for dashboard access)
+# Single key (backwards compatible):
+API_KEY=your_secret_key
+# OR multiple keys for different users (comma-separated):
+API_KEYS=key_for_you,key_for_friend1,key_for_friend2
+
 # Telegram Alerts (Required)
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id

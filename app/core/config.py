@@ -18,7 +18,19 @@ logging.basicConfig(
 logger = logging.getLogger("screener")
 
 # --- AUTH CONFIG ---
-API_KEY = os.getenv("API_KEY")
+# Supports multiple API keys: comma-separated in API_KEYS, or single API_KEY (backwards compatible)
+_api_key_single = os.getenv("API_KEY", "")
+_api_keys_multi = os.getenv("API_KEYS", "")  # Comma-separated: "key1,key2,key3"
+
+# Combine into a set of valid keys
+API_KEYS = set()
+if _api_key_single:
+    API_KEYS.add(_api_key_single.strip())
+if _api_keys_multi:
+    API_KEYS.update(k.strip() for k in _api_keys_multi.split(",") if k.strip())
+
+# Backwards compatibility: keep API_KEY for code that uses it
+API_KEY = _api_key_single or (list(API_KEYS)[0] if API_KEYS else None)
 
 # --- TELEGRAM CONFIG ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
