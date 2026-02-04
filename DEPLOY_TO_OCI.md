@@ -226,3 +226,66 @@ Use this to expose the API and monitoring dashboard.
 
 ### "ModuleNotFoundError: No module named 'app'"
 Ensure your `PYTHONPATH` includes the current directory, or run python with `-m` from the root directory as shown in the guides above.
+
+---
+
+## Database Backup Setup
+
+The `scripts/backup_db.sh` script provides automated SQLite database backups with:
+- Transaction-safe backups using SQLite's `.backup` command
+- Gzip compression to save space
+- Automatic cleanup (keeps last 24 hourly backups)
+- Integrity verification
+- Optional upload to Oracle Cloud Object Storage
+
+### Step 1: Set up the Cron Job
+Add an hourly backup job to your crontab:
+
+```bash
+crontab -e
+```
+
+Add this line to run backups every hour:
+```bash
+# Database backup every hour
+0 * * * * /home/opc/screenerX/scripts/backup_db.sh >> /home/opc/screenerX/backup.log 2>&1
+```
+
+### Step 2 (Optional): Enable OCI Object Storage Backup
+
+OCI Always Free tier includes **10 GB of Object Storage** which is perfect for backups.
+
+#### 2a. Create a Bucket
+1. Go to **OCI Console** -> **Storage** -> **Buckets**
+2. Click **Create Bucket**
+3. Name: `screener-backups`
+4. Click **Create**
+
+#### 2b. Install OCI CLI
+```bash
+sudo dnf install python39-oci-cli -y
+# Or install via pip:
+# pip install oci-cli
+
+# Configure CLI
+oci setup config
+# Follow prompts - you'll need your OCI API keys
+```
+
+#### 2c. Configure the Backup Script
+Edit `scripts/backup_db.sh` and set these variables:
+```bash
+OCI_BUCKET_NAME="screener-backups"
+OCI_NAMESPACE="your-namespace"  # Find in OCI Console -> Tenancy Details
+```
+
+#### 2d. Verify Setup
+Run a test backup:
+```bash
+cd /home/opc/screenerX
+./scripts/backup_db.sh
+```
+
+### Backup Locations
+- **Local backups**: `/home/opc/screenerX/backups/`
+- **Cloud backups** (if enabled): OCI Object Storage bucket
