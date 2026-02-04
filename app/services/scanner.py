@@ -1,7 +1,6 @@
 import logging
-import requests
 from datetime import datetime
-from app.core.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from app.core.alerts import AlertBot
 
 # Import strategies and data
 # Assuming the app is run from the project root where these packages exist
@@ -20,12 +19,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-def send_telegram_report(signals):
-    """Send consolidated report to Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("❌ Telegram credentials missing")
-        return
+# Initialize alert bot for broadcasting
+alert_bot = AlertBot()
 
+def send_telegram_report(signals):
+    """Send consolidated report to Telegram (personal chat + channel)."""
     if not signals:
         message = f"<b>📉 Daily Swing Scan ({datetime.now().strftime('%d-%b')})</b>\n\nNo high-confidence setups found today."
     else:
@@ -59,14 +57,9 @@ def send_telegram_report(signals):
             
         message += "⚠️ <i>Algo-generated. DYOR.</i>"
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    
-    try:
-        requests.post(url, json=payload)
-        logger.info("✅ Telegram report sent!")
-    except Exception as e:
-        logger.error(f"❌ Failed to send Telegram: {e}")
+    # Send to both personal chat and channel
+    alert_bot.send_message(message, broadcast=True)
+    logger.info("✅ Telegram report sent!")
 
 
 def get_swing_signals(symbols):

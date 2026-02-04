@@ -24,6 +24,7 @@ API_KEY = os.getenv("API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_HEALTH_BOT_TOKEN = os.getenv("TELEGRAM_HEALTH_BOT_TOKEN", "YOUR_HEALTH_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "")  # Optional: Channel for broadcasting alerts to all subscribers
 
 # --- DHAN CONFIG ---
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID", "YOUR_CLIENT_ID")

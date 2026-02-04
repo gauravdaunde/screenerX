@@ -41,6 +41,11 @@ DHAN_ACCESS_TOKEN=your_token
 # Telegram Alerts (Required)
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+
+# Telegram Channel (Optional - for sharing alerts with friends)
+# Create a channel, add your bot as admin, and paste channel ID here
+# Anyone who joins the channel will see all alerts automatically
+TELEGRAM_CHANNEL_ID=-100XXXXXXXXXX
 ```
 
 ### 3. Usage
