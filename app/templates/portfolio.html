@@ -138,13 +138,26 @@
                     <!-- JS will populate strategy filters here -->
                 </div>
 
+                <!-- STOCKS -->
                 <div class="card shadow-sm h-100 mb-4">
                     <div class="card-header bg-white py-3 border-bottom d-flex justify-content-between">
-                        <span class="text-success fw-bold">🟢 Active Positions</span>
+                        <span class="text-success fw-bold">🟢 Active Stocks</span>
                     </div>
                     <div class="card-body p-0">
                         <div class="table-responsive">
                             {{ stocks_html | safe }}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- OPTIONS -->
+                <div class="card shadow-sm h-100 mb-4">
+                    <div class="card-header bg-white py-3 border-bottom d-flex justify-content-between">
+                        <span class="text-warning fw-bold">🟠 Active Options</span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            {{ options_html | safe }}
                         </div>
                     </div>
                 </div>
@@ -587,8 +600,11 @@
         // Overview: Live positions (Stocks/Options), Strategy is Col 0. Pass isOverview=true
         setupTableFilters('overviewFilters', '#overview', 0, true);
 
-        // History: Closed trades, Strategy is Col 1 (after Symbol)
-        setupTableFilters('historyFilters', '#history', 1);
+        // History: Closed trades, Strategy is Col 2 (after Symbol, Type). Type is added, so Symbol(0), Type(1), Strategy(2)
+        // Adjust index: Now I added Type column.
+        // open columns: strategy, symbol, quantity... (Strategy is 0)
+        // closed columns: symbol, type, strategy, quantity... (Strategy is 2)
+        setupTableFilters('historyFilters', '#history', 2);
     </script>
 </body>
 

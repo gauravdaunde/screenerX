@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -23,6 +24,7 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
         conn = get_connection()
         # Using context manager for safety
         with conn:
+            # We fetch all columns including asset_type
             df = pd.read_sql_query("SELECT * FROM trades WHERE status = 'OPEN'", conn)
             
             # Fetch Real Strategy Wallets
@@ -44,9 +46,14 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
         current_value = 0.0
         total_pnl = 0.0
         
-        stocks_html = "<div class='alert alert-secondary'>No open positions.</div>"
+        stocks_html = "<div class='alert alert-secondary'>No open stock positions.</div>"
+        options_html = "<div class='alert alert-secondary'>No open option positions.</div>"
         
         if not df.empty:
+            # Handle potential missing asset_type in DF from old tables if DB migration was tricky
+            if 'asset_type' not in df.columns:
+                df['asset_type'] = 'STOCK' # Default
+
             # Fetch Real-Time Prices
             tickers = [f"{s}.NS" for s in df['symbol'].unique()]
             try:
@@ -83,11 +90,20 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
             current_value = df['current_val'].sum()
             total_pnl = current_value - total_invested
             
+            # Filter Dataframes
+            stocks_df = df[df['asset_type'] == 'STOCK'].copy()
+            options_df = df[df['asset_type'] == 'OPTION'].copy()
+
             # Generate Tables
             cols = ['strategy', 'symbol', 'quantity', 'entry_display', 'cmp_display', 'pnl_display', 'tp', 'sl']
             rename_map = {'strategy': 'Strategy', 'symbol':'Symbol', 'quantity':'Qty', 'entry_display':'Entry', 'cmp_display':'CMP', 'pnl_display':'PnL', 'tp':'Target', 'sl':'Stop Loss'}
             
-            stocks_html = df[cols].rename(columns=rename_map).to_html(classes='table table-hover align-middle', escape=False, index=False)
+            if not stocks_df.empty:
+                stocks_html = stocks_df[cols].rename(columns=rename_map).to_html(classes='table table-hover align-middle', escape=False, index=False)
+            
+            if not options_df.empty:
+                # Use same cols for now
+                options_html = options_df[cols].rename(columns=rename_map).to_html(classes='table table-hover align-middle', escape=False, index=False)
 
         # Build Strategy Capital Dict (Real Data from DB)
         if not wallets_df.empty:
@@ -130,8 +146,10 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
             closed_df = pd.DataFrame()
             
             if not all_trades_df.empty:
+                if 'asset_type' not in all_trades_df.columns:
+                    all_trades_df['asset_type'] = 'STOCK'
+                    
                 closed_df = all_trades_df[all_trades_df['status'] == 'CLOSED'].copy()
-                # open_df = all_trades_df[all_trades_df['status'] == 'OPEN'].copy()
                 
                 realized_pnl = closed_df['pnl'].sum() if not closed_df.empty else 0.0
                 
@@ -158,9 +176,11 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
                     closed_df['exit_date'] = pd.to_datetime(closed_df['exit_time']).dt.strftime('%Y-%m-%d')
                     
                     # Select and rename columns
-                    display_cols = ['symbol', 'strategy', 'quantity', 'entry_display', 'exit_display', 'rr_display', 'entry_date', 'exit_date', 'pnl_display', 'exit_reason']
+                    # Added 'asset_type' -> 'Type'
+                    display_cols = ['symbol', 'asset_type', 'strategy', 'quantity', 'entry_display', 'exit_display', 'rr_display', 'entry_date', 'exit_date', 'pnl_display', 'exit_reason']
                     rename_map = {
                         'symbol': 'Symbol',
+                        'asset_type': 'Type',
                         'strategy': 'Strategy',
                         'quantity': 'Qty',
                         'entry_display': 'Entry',
@@ -178,12 +198,10 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
                         index=False
                     )
                     
-                    # Analytics
-                    # 1. Chart Data
+                    # Analytics (Chart, Metrics, Heatmap)
                     df_chart = closed_df.sort_values('exit_time').copy()
                     chart_data = {}
                     strategies = df_chart['strategy'].unique()
-                    
                     min_date = df_chart['exit_time'].min()
                     
                     for strat in strategies:
@@ -201,8 +219,6 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
                             chart_data['Nifty 50 (Benchmark)'] = nifty_data
                             
                     chart_data_json = json.dumps(chart_data)
-                    
-                    # Metrics & Heatmap
                     metrics = calculate_strategy_metrics(closed_df)
                     heatmap = calculate_monthly_heatmap(closed_df)
                     
@@ -246,6 +262,7 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
             "pnl_color": pnl_color,
             "now_str": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             "stocks_html": stocks_html,
+            "options_html": options_html,
             "closed_trades_html": closed_trades_html,
             "realized_pnl": realized_pnl,
             "chart_data_json": chart_data_json,

@@ -1,3 +1,4 @@
+
 import sqlite3
 from datetime import datetime
 from app.core.config import DB_NAME, logger
@@ -30,9 +31,16 @@ def init_db():
                     exit_price REAL,
                     exit_time TIMESTAMP,
                     pnl REAL,
-                    exit_reason TEXT
+                    exit_reason TEXT,
+                    asset_type TEXT DEFAULT 'STOCK' -- STOCK, OPTION
                 )
             ''')
+            
+            # Migration: Add asset_type if missing (for existing DBs)
+            try:
+                c.execute("ALTER TABLE trades ADD COLUMN asset_type TEXT DEFAULT 'STOCK'")
+            except sqlite3.OperationalError:
+                pass # Column already exists
             
             # Create Strategy Wallets Table (New)
             c.execute('''
@@ -97,14 +105,14 @@ def update_strategy_balance(strategy: str, amount_change: float):
         c.execute('UPDATE strategy_wallets SET available_balance = ?, updated_at = ? WHERE strategy = ?', (new_bal, datetime.now(), strategy))
         conn.commit()
 
-def log_trade(symbol: str, strategy: str, signal_type: str, price: float, qty: int, sl: float, tp: float):
+def log_trade(symbol: str, strategy: str, signal_type: str, price: float, qty: int, sl: float, tp: float, asset_type: str = "STOCK"):
     with get_connection() as conn:
         c = conn.cursor()
         
         c.execute('''
-            INSERT INTO trades (symbol, strategy, signal_type, entry_price, quantity, entry_time, sl, tp, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (symbol, strategy, signal_type, price, qty, datetime.now(), sl, tp, 'OPEN'))
+            INSERT INTO trades (symbol, strategy, signal_type, entry_price, quantity, entry_time, sl, tp, status, asset_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (symbol, strategy, signal_type, price, qty, datetime.now(), sl, tp, 'OPEN', asset_type))
         
         conn.commit()
     
@@ -112,7 +120,7 @@ def log_trade(symbol: str, strategy: str, signal_type: str, price: float, qty: i
     invested_amount = price * qty
     update_strategy_balance(strategy, -invested_amount)
     
-    logger.info(f"📝 Trade Logged: {signal_type} {qty} {symbol} ({strategy}) @ {price} (Invested: ₹{invested_amount:,.2f})")
+    logger.info(f"📝 Trade Logged: {signal_type} {qty} {symbol} ({strategy}) @ {price} (Invested: ₹{invested_amount:,.2f}) [Type: {asset_type}]")
 
 def close_trade_in_db(trade_id: int, exit_price: float, reason: str) -> float:
     with get_connection() as conn:
