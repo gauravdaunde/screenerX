@@ -11,7 +11,7 @@ import pandas as pd
 import yfinance as yf
 from app.db.database import ensure_wallet_exists, log_trade, get_connection
 from app.core.alerts import AlertBot
-from options_strategies.core import IndexConfig, IronCondor, BullCallSpread, BearPutSpread
+from options_strategies.core import IndexConfig, IronCondor, BullCallSpread, BearPutSpread, OptionPricer
 
 def get_next_expiry(symbol: str) -> str:
     """
@@ -152,10 +152,90 @@ class LiveDataManager:
             logging.error(f"Data fetch error for {ticker}: {e}")
             return pd.DataFrame()
 
+def calculate_pnl_update(trade_row, current_spot, current_vix, strategy_obj, config):
+    try:
+        # trade_row: (id, signal_type, entry_price, quantity, strike_price, expiry_date)
+        entry_price = trade_row[2]
+        qty = trade_row[3]
+        anchor_strike = trade_row[4]
+        expiry_date_str = trade_row[5]
+
+        # Entry Cash Flow per unit
+        # stored price is -net_cost. So net_cost = -price.
+        entry_cash_flow = -entry_price
+
+        # Days to expiry
+        try:
+            expiry_dt = datetime.strptime(expiry_date_str, "%Y-%m-%d")
+        except:
+            # Fallback if expiry not parsed
+            expiry_dt = datetime.now() + timedelta(days=5)
+
+        days_to_expiry = (expiry_dt - datetime.now()).days
+
+        # Reconstruct Legs
+        legs = []
+        if strategy_obj.name == "Iron Condor":
+            base = anchor_strike
+            sc_strike = base + config.wing_dist
+            sp_strike = base - config.wing_dist
+            lc_strike = sc_strike + config.width
+            lp_strike = sp_strike - config.width
+            legs = [
+                {'strike': sc_strike, 'type': 'CE', 'side': 'SELL'},
+                {'strike': sp_strike, 'type': 'PE', 'side': 'SELL'},
+                {'strike': lc_strike, 'type': 'CE', 'side': 'BUY'},
+                {'strike': lp_strike, 'type': 'PE', 'side': 'BUY'}
+            ]
+        elif strategy_obj.name == "Bull Call Spread":
+            base = anchor_strike # Buy Leg is anchor
+            bc_strike = base
+            sc_strike = base + config.width
+            legs = [
+                {'strike': bc_strike, 'type': 'CE', 'side': 'BUY'},
+                {'strike': sc_strike, 'type': 'CE', 'side': 'SELL'}
+            ]
+        elif strategy_obj.name == "Bear Put Spread":
+            base = anchor_strike # Buy Leg is anchor
+            bp_strike = base
+            sp_strike = base - config.width
+            legs = [
+                {'strike': bp_strike, 'type': 'PE', 'side': 'BUY'},
+                {'strike': sp_strike, 'type': 'PE', 'side': 'SELL'}
+            ]
+
+        exit_cash_flow = 0
+        for leg in legs:
+             prem = OptionPricer.get_premium(current_spot, leg['strike'], leg['type'], days_to_expiry, current_vix)
+             if leg['side'] == 'BUY':
+                 exit_cash_flow += prem # Credit to sell
+             else:
+                 exit_cash_flow -= prem # Debit to buy back
+
+        # PnL
+        pnl_per_unit = entry_cash_flow + exit_cash_flow
+        total_pnl = pnl_per_unit * qty
+
+        # Invested (for ROI)
+        invested = 0
+        if entry_cash_flow < 0: # Debit Trade
+            invested = abs(entry_cash_flow) * qty
+        else: # Credit Trade (Margin)
+            invested = config.width * qty
+
+        pnl_pct = 0.0
+        if invested > 0:
+            pnl_pct = (total_pnl / invested) * 100
+
+        return total_pnl, pnl_pct
+
+    except Exception as e:
+        logging.error(f"PnL calculation failed: {e}")
+        return 0, 0
+
 def run_live_scan():
     """
-    Scans for new signals for NIFTY and BANKNIFTY.
-    Sends alerts if a signal is found and no conflicting position exists.
+    Scans for new signals. If position exists, sends PnL update instead of new signal.
     """
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("LiveOptions")
@@ -165,18 +245,9 @@ def run_live_scan():
     ensure_wallet_exists(BASE_STRATEGY_CATEGORY)
 
     for cfg in CONFIGS:
-        # Check for existing open position to prevent duplicates
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM trades WHERE symbol = ? AND strategy LIKE ? AND status = 'OPEN'", 
-                (cfg.symbol, f"{BASE_STRATEGY_CATEGORY}%")
-            )
-            if cursor.fetchone():
-                logger.info(f"Skipping {cfg.symbol}: Open Position Exists.")
-                continue
-
         logger.info(f"Scanning {cfg.symbol}...")
+        
+        # 1. Fetch Data First (We need it for both new signals and PnL updates)
         try:
             df = LiveDataManager.fetch_recent_data(cfg.ticker)
             if df.empty:
@@ -184,7 +255,7 @@ def run_live_scan():
                 continue
                 
             last_row = df.iloc[-1]
-            prev_row = df.iloc[-2] # Assuming valid
+            prev_row = df.iloc[-2]
             
             spot = last_row['close']
             
@@ -192,6 +263,16 @@ def run_live_scan():
             is_index = cfg.symbol in ["NIFTY", "BANKNIFTY"]
             vix = last_row['vix'] if is_index else last_row['vix'] * 1.2
             
+            # 2. Check for existing open position
+            existing_trade = None
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, signal_type, entry_price, quantity, strike_price, expiry_date FROM trades WHERE symbol = ? AND strategy LIKE ? AND status = 'OPEN'", 
+                    (cfg.symbol, f"{BASE_STRATEGY_CATEGORY}%")
+                )
+                existing_trade = cursor.fetchone() # Returns tuple or None
+
             strategies = [
                 IronCondor(cfg),
                 BullCallSpread(cfg),
@@ -199,131 +280,170 @@ def run_live_scan():
             ]
             
             for strat in strategies:
+                # Early check: If NO Open Position, did we already signal this strategy today?
+                if not existing_trade:
+                    with get_connection() as conn:
+                        cursor = conn.cursor()
+                        # Construct signal type string to match DB
+                        sig_type_query = f"ENTER:{strat.name.upper()}"
+                        
+                        # Get start of today
+                        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                        
+                        cursor.execute(
+                            "SELECT id FROM trades WHERE symbol = ? AND signal_type = ? AND entry_time >= ?", 
+                            (cfg.symbol, sig_type_query, today_start)
+                        )
+                        if cursor.fetchone():
+                            # Already signaled today (and presumably closed, since existing_trade is None)
+                            logger.info(f"Skipping {strat.name} for {cfg.symbol}: Already signaled today.")
+                            continue
+
                 signal = strat.get_signal(last_row, prev_row)
                 
-                # Composite Strategy ID: SWING_OPTIONS:IronCondor
-                # composite_strategy_id = f"{BASE_STRATEGY_CATEGORY}:{strat.name.replace(' ', '')}"
-                
                 if signal['action'] == 'ENTER':
-                    logger.info(f"✨ Signal Found: {strat.name} for {cfg.symbol}")
                     
-                    # Generate Legs
-                    legs = strat.create_legs(spot, vix)
-                    
-                    # Construct readable message
-                    legs_str = ""
-                    entry_cost = 0
-                    for leg in legs:
-                        legs_str += f"\n   • {leg['side']} {leg['strike']} {leg['type']} @ ₹{leg['price']:.1f}"
-                        if leg['side'] == 'BUY':
-                            entry_cost -= leg['price'] # Debit
+                    if existing_trade:
+                        # Unpack
+                        # ID, Type, Price, Qty, Strike, Expiry
+                        s_type = existing_trade[1] # e.g. "ENTER:IRON CONDOR"
+                        
+                        # Extract trade strategy name
+                        # s_type format: "ENTER:STRAT NAME"
+                        if ":" in s_type:
+                            trade_strat_name = s_type.split(":")[1].replace(" ", "").upper()
                         else:
-                            entry_cost += leg['price'] # Credit
-
-                    # Capture raw cost for logging (Negative = Debit, Positive = Credit)
-                    raw_entry_cost = entry_cost
+                            trade_strat_name = s_type.upper()
                             
-                    # Position Sizing
-                    # Target Deployment per trade (e.g. 25% of 100k = 25k)
-                    PER_TRADE_ALLOCATION_PCT = 0.25
-                    target_capital = CAPITAL_ALLOCATION * PER_TRADE_ALLOCATION_PCT
-                    
-                    capital_per_lot = 0.0
-                    if entry_cost > 0: # Credit Strategy (Margin Blocking)
-                        # Approx Margin = Spread Width * Lot Size
-                        capital_per_lot = cfg.width * cfg.lot_size
-                    else: # Debit Strategy (Premium Paid)
-                        capital_per_lot = abs(entry_cost) * cfg.lot_size
+                        current_strat_name = strat.name.replace(" ", "").upper()
                         
-                    # Calculate Lots (Floor)
-                    num_lots = 1
-                    if capital_per_lot > 0:
-                        num_lots = int(target_capital / capital_per_lot)
-                        
-                    # Safety bounds
-                    num_lots = max(1, min(num_lots, 10)) # Min 1, Max 10 lots
-                    
-                    total_qty = num_lots * cfg.lot_size
-                    
-                    # Log sizing decision
-                    logger.info(f"Sizing: Target ₹{target_capital/1000:.1f}k | Cost/Lot ₹{capital_per_lot/1000:.1f}k -> {num_lots} Lots")
-
-                    # PnL Estimates with STOP LOSS Logic (Managed Risk)
-                    max_profit = 0
-                    managed_risk = 0
-                    risk_type_label = ""
-                    
-                    if entry_cost > 0: # Net Credit (Iron Condor)
-                         credit_collected = entry_cost * total_qty
-                         
-                         # Our Backtest Logic: Stop @ 2.0 * Premium Value (i.e., loss = 2 * Premium)
-                         max_profit = credit_collected
-                         managed_risk = max_profit * 2.0 
-                         risk_type_label = "Managed Risk (Stop @ 2x Credit)"
-
-                    else: # Net Debit (Spreads)
-                         # Debit Spreads usually defined risk = entry cost.
-                         entry_cost = abs(entry_cost)
-                         total_cost = entry_cost * total_qty
-                         
-                         # Backtest Logic: Stop @ 50% of Premium Paid.
-                         managed_risk = total_cost * 0.5
-                         target_reward = total_cost * 1.5
-                         max_profit = target_reward # Display Target Profit, not theoretical max
-                         risk_type_label = "Managed Risk (Stop @ 50% Cost)"
-
-                    risk_reward = f"Risk: ₹{managed_risk:.0f} | Target: ₹{max_profit:.0f} ({risk_type_label})"
-
-                    # Send Alert
-                    msg = (
-                        f"🦅 <b>NEW OPTIONS TRADE: {cfg.symbol}</b>\n"
-                        f"Strategy: <b>{strat.name}</b>\n"
-                        f"Type: {BASE_STRATEGY_CATEGORY}\n\n"
-                        f"Spot: {spot:.0f} | VIX: {vix:.2f}\n"
-                        f"{legs_str}\n\n"
-                        f"� <b>Position Size: {num_lots} Lots ({total_qty} Qty)</b>\n"
-                        f"💰 {risk_reward}\n"
-                        f"Conf: {signal.get('confidence', 0)}%"
-                    )
-                    
-                    # Send
-                    alert_bot.send_message(msg)
-                    logger.info(f"Alert Sent for {cfg.symbol} {strat.name}")
-
-                    # Log Trade to Database
-                    # Note: log_trade expects price to be positive for Buy (Debit), so we flip sign of raw_entry_cost
-                    # If raw_entry_cost is negative (Debit), price = positive (deducted).
-                    # If raw_entry_cost is positive (Credit), price = negative (added).
-                    trade_price = -raw_entry_cost
-                    
-                    # Determine Anchor Strike
-                    # For Iron Condor: Center Base (Spot Rounding)
-                    # For Spreads: The Buy Leg Strike
-                    anchor_strike = 0.0
-                    if strat.name == "Iron Condor":
-                        anchor_strike = round(spot / cfg.strike_gap) * cfg.strike_gap
+                        if trade_strat_name == current_strat_name:
+                            # SAME Strategy Signaling Again -> Send Update
+                            pnl_val, pnl_pct = calculate_pnl_update(existing_trade, spot, vix, strat, cfg)
+                            
+                            status_str = "PROFIT" if pnl_val >= 0 else "LOSS"
+                            emoji = "🟢" if pnl_val >= 0 else "🔴"
+                            
+                            msg = (
+                                f"{emoji} <b>UPDATE: {cfg.symbol} {strat.name}</b>\n"
+                                f"Signal Valid. Existing Position Status:\n"
+                                f"PnL: {pnl_pct:.1f}% ({status_str} ₹{abs(pnl_val):.0f})\n"
+                                f"Spot: {spot:.0f} | VIX: {vix:.2f}"
+                            )
+                            alert_bot.send_message(msg)
+                            logger.info(f"Sent PnL Update for {cfg.symbol} {strat.name}: {pnl_val}")
+                            
+                        else:
+                            # Different strategy signaling but one is open. Skip.
+                            logger.info(f"Skipping {strat.name} for {cfg.symbol}: Conflict with Open Trade ({trade_strat_name}).")
+                            
                     else:
-                        # Find the BUY leg
-                        for l in legs:
-                            if l['side'] == 'BUY':
-                                anchor_strike = l['strike']
-                                break
-                    
-                    expiry_date = get_next_expiry(cfg.symbol)
+                        # NO Open Position -> Execute Entry Logic (Original Code)
+                        logger.info(f"✨ Signal Found: {strat.name} for {cfg.symbol}")
+                        
+                        # Generate Legs
+                        legs = strat.create_legs(spot, vix)
+                        
+                        # Construct readable message
+                        legs_str = ""
+                        entry_cost = 0
+                        for leg in legs:
+                            legs_str += f"\n   • {leg['side']} {leg['strike']} {leg['type']} @ ₹{leg['price']:.1f}"
+                            if leg['side'] == 'BUY':
+                                entry_cost -= leg['price'] # Debit
+                            else:
+                                entry_cost += leg['price'] # Credit
 
-                    log_trade(
-                        symbol=cfg.symbol,
-                        strategy=BASE_STRATEGY_CATEGORY,
-                        signal_type=f"ENTER:{strat.name.upper()}",
-                        price=trade_price,
-                        qty=total_qty,
-                        sl=0, # Complex structure, SL is managed manually or via PnL check
-                        tp=0,
-                        asset_type="OPTION",
-                        strike_price=anchor_strike,
-                        expiry_date=expiry_date
-                    )
-                    
+                        raw_entry_cost = entry_cost
+                                
+                        # Position Sizing
+                        PER_TRADE_ALLOCATION_PCT = 0.25
+                        target_capital = CAPITAL_ALLOCATION * PER_TRADE_ALLOCATION_PCT
+                        
+                        capital_per_lot = 0.0
+                        if entry_cost > 0: 
+                            capital_per_lot = cfg.width * cfg.lot_size
+                        else: 
+                            capital_per_lot = abs(entry_cost) * cfg.lot_size
+                            
+                        num_lots = 1
+                        if capital_per_lot > 0:
+                            num_lots = int(target_capital / capital_per_lot)
+                            
+                        num_lots = max(1, min(num_lots, 10))
+                        total_qty = num_lots * cfg.lot_size
+                        
+                        # PnL Estimates
+                        max_profit = 0
+                        managed_risk = 0
+                        risk_type_label = ""
+                        
+                        if entry_cost > 0: # Net Credit
+                             credit_collected = entry_cost * total_qty
+                             max_profit = credit_collected
+                             managed_risk = max_profit * 2.0 
+                             risk_type_label = "Managed Risk (Stop @ 2x Credit)"
+                        else: # Net Debit
+                             entry_cost_abs = abs(entry_cost)
+                             total_cost = entry_cost_abs * total_qty
+                             managed_risk = total_cost * 0.5
+                             target_reward = total_cost * 1.5
+                             max_profit = target_reward 
+                             risk_type_label = "Managed Risk (Stop @ 50% Cost)"
+
+                        risk_reward = f"Risk: ₹{managed_risk:.0f} | Target: ₹{max_profit:.0f} ({risk_type_label})"
+
+                        # Send Alert
+                        msg = (
+                            f"🦅 <b>NEW OPTIONS TRADE: {cfg.symbol}</b>\n"
+                            f"Strategy: <b>{strat.name}</b>\n"
+                            f"Type: {BASE_STRATEGY_CATEGORY}\n\n"
+                            f"Spot: {spot:.0f} | VIX: {vix:.2f}\n"
+                            f"{legs_str}\n\n"
+                            f"📦 <b>Position Size: {num_lots} Lots ({total_qty} Qty)</b>\n"
+                            f"💰 {risk_reward}\n"
+                            f"Conf: {signal.get('confidence', 0)}%"
+                        )
+                        
+                        alert_bot.send_message(msg)
+                        logger.info(f"Alert Sent for {cfg.symbol} {strat.name}")
+
+                        # Log Trade
+                        trade_price = -raw_entry_cost
+                        
+                        anchor_strike = 0.0
+                        if strat.name == "Iron Condor":
+                            anchor_strike = round(spot / cfg.strike_gap) * cfg.strike_gap
+                        elif strat.name == "Bull Call Spread" or strat.name == "Bear Put Spread":
+                             # Start of legs usually has the anchor, but let's be safe
+                             # Bull Call: Buy Base, Sell Higher
+                             # Bear Put: Buy Base, Sell Lower
+                             # In existing code for spreads, "base" is used for Buy leg.
+                             # legs[0] is Buy Base for Bull Call
+                             # legs[0] is Buy Base for Bear Put
+                            anchor_strike = legs[0]['strike']  
+                        else:
+                            # Fallback
+                            anchor_strike = legs[0]['strike']
+
+                        expiry_date = get_next_expiry(cfg.symbol)
+
+                        log_trade(
+                            symbol=cfg.symbol,
+                            strategy=BASE_STRATEGY_CATEGORY,
+                            signal_type=f"ENTER:{strat.name.upper()}",
+                            price=trade_price,
+                            qty=total_qty,
+                            sl=0, 
+                            tp=0,
+                            asset_type="OPTION",
+                            strike_price=anchor_strike,
+                            expiry_date=expiry_date
+                        )
+                        
+                        # Break strategies loop for this symbol to avoid multiple opening on same symbol at same time
+                        break
+                        
         except Exception as e:
             logger.error(f"Error scanning {cfg.symbol}: {e}")
 
