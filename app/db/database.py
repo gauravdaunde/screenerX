@@ -36,9 +36,19 @@ def init_db():
                 )
             ''')
             
-            # Migration: Add asset_type if missing (for existing DBs)
             try:
                 c.execute("ALTER TABLE trades ADD COLUMN asset_type TEXT DEFAULT 'STOCK'")
+            except sqlite3.OperationalError:
+                pass # Column already exists
+                
+            # Migration: Add option specific columns
+            try:
+                c.execute("ALTER TABLE trades ADD COLUMN strike_price REAL")
+            except sqlite3.OperationalError:
+                pass # Column already exists
+                
+            try:
+                c.execute("ALTER TABLE trades ADD COLUMN expiry_date TEXT")
             except sqlite3.OperationalError:
                 pass # Column already exists
             
@@ -105,14 +115,14 @@ def update_strategy_balance(strategy: str, amount_change: float):
         c.execute('UPDATE strategy_wallets SET available_balance = ?, updated_at = ? WHERE strategy = ?', (new_bal, datetime.now(), strategy))
         conn.commit()
 
-def log_trade(symbol: str, strategy: str, signal_type: str, price: float, qty: int, sl: float, tp: float, asset_type: str = "STOCK"):
+def log_trade(symbol: str, strategy: str, signal_type: str, price: float, qty: int, sl: float, tp: float, asset_type: str = "STOCK", strike_price: float = None, expiry_date: str = None):
     with get_connection() as conn:
         c = conn.cursor()
         
         c.execute('''
-            INSERT INTO trades (symbol, strategy, signal_type, entry_price, quantity, entry_time, sl, tp, status, asset_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (symbol, strategy, signal_type, price, qty, datetime.now(), sl, tp, 'OPEN', asset_type))
+            INSERT INTO trades (symbol, strategy, signal_type, entry_price, quantity, entry_time, sl, tp, status, asset_type, strike_price, expiry_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (symbol, strategy, signal_type, price, qty, datetime.now(), sl, tp, 'OPEN', asset_type, strike_price, expiry_date))
         
         conn.commit()
     

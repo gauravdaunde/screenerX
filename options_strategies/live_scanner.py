@@ -6,12 +6,67 @@ import os
 sys.path.append(os.getcwd())
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
 from app.db.database import ensure_wallet_exists, log_trade, get_connection
 from app.core.alerts import AlertBot
 from options_strategies.core import IndexConfig, IronCondor, BullCallSpread, BearPutSpread
+
+def get_next_expiry(symbol: str) -> str:
+    """
+    Calculate next expiry date.
+    Indices: Weekly (Next Thursday)
+    Stocks: Monthly (Last Thursday of Current/Next Month)
+    """
+    today = datetime.now()
+    
+    # Simple Logic for now: 
+    # If Index -> Target nearest Thursday
+    # If Stock -> Target last Thursday of Month
+    
+    is_index = symbol in ["NIFTY", "BANKNIFTY"]
+    
+    if is_index:
+        # Find next Thursday
+        # weekday(): Mon=0 ... Thu=3
+        days_ahead = 3 - today.weekday()
+        if days_ahead <= 0: # Target next week if today is Fri/Sat/Sun or late Thu
+             days_ahead += 7
+        next_expiry = today + timedelta(days=days_ahead)
+        return next_expiry.strftime("%Y-%m-%d")
+    else:
+        # Stocks: Last Thursday of current month
+        # Start from last day of month and go back until Thu
+        # If today is past that, go to next month
+        
+        # Simplified: Project 25 days ahead and find nearest Thursday? 
+        # Better: Current Month Expiry
+        
+        # Find Last Thursday of this month
+        import calendar
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        last_date = datetime(today.year, today.month, last_day)
+        
+        offset = (last_date.weekday() - 3) % 7
+        this_month_expiry = last_date - timedelta(days=offset)
+        
+        if today.date() > this_month_expiry.date():
+             # Move to next month
+             if today.month == 12:
+                 next_month = 1
+                 year = today.year + 1
+             else:
+                 next_month = today.month + 1
+                 year = today.year
+                 
+             last_day_next = calendar.monthrange(year, next_month)[1]
+             last_date_next = datetime(year, next_month, last_day_next)
+             offset_next = (last_date_next.weekday() - 3) % 7
+             final_expiry = last_date_next - timedelta(days=offset_next)
+             return final_expiry.strftime("%Y-%m-%d")
+        
+        return this_month_expiry.strftime("%Y-%m-%d")
 
 # ==========================================
 # CONFIGURATION
@@ -110,6 +165,17 @@ def run_live_scan():
     ensure_wallet_exists(BASE_STRATEGY_CATEGORY)
 
     for cfg in CONFIGS:
+        # Check for existing open position to prevent duplicates
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM trades WHERE symbol = ? AND strategy LIKE ? AND status = 'OPEN'", 
+                (cfg.symbol, f"{BASE_STRATEGY_CATEGORY}%")
+            )
+            if cursor.fetchone():
+                logger.info(f"Skipping {cfg.symbol}: Open Position Exists.")
+                continue
+
         logger.info(f"Scanning {cfg.symbol}...")
         try:
             df = LiveDataManager.fetch_recent_data(cfg.ticker)
@@ -136,7 +202,7 @@ def run_live_scan():
                 signal = strat.get_signal(last_row, prev_row)
                 
                 # Composite Strategy ID: SWING_OPTIONS:IronCondor
-                composite_strategy_id = f"{BASE_STRATEGY_CATEGORY}:{strat.name.replace(' ', '')}"
+                # composite_strategy_id = f"{BASE_STRATEGY_CATEGORY}:{strat.name.replace(' ', '')}"
                 
                 if signal['action'] == 'ENTER':
                     logger.info(f"✨ Signal Found: {strat.name} for {cfg.symbol}")
@@ -153,6 +219,9 @@ def run_live_scan():
                             entry_cost -= leg['price'] # Debit
                         else:
                             entry_cost += leg['price'] # Credit
+
+                    # Capture raw cost for logging (Negative = Debit, Positive = Credit)
+                    raw_entry_cost = entry_cost
                             
                     # PnL Estimates with STOP LOSS Logic (Managed Risk)
                     max_profit = 0
@@ -195,6 +264,40 @@ def run_live_scan():
                     # Send
                     alert_bot.send_message(msg)
                     logger.info(f"Alert Sent for {cfg.symbol} {strat.name}")
+
+                    # Log Trade to Database
+                    # Note: log_trade expects price to be positive for Buy (Debit), so we flip sign of raw_entry_cost
+                    # If raw_entry_cost is negative (Debit), price = positive (deducted).
+                    # If raw_entry_cost is positive (Credit), price = negative (added).
+                    trade_price = -raw_entry_cost
+                    
+                    # Determine Anchor Strike
+                    # For Iron Condor: Center Base (Spot Rounding)
+                    # For Spreads: The Buy Leg Strike
+                    anchor_strike = 0.0
+                    if strat.name == "Iron Condor":
+                        anchor_strike = round(spot / cfg.strike_gap) * cfg.strike_gap
+                    else:
+                        # Find the BUY leg
+                        for l in legs:
+                            if l['side'] == 'BUY':
+                                anchor_strike = l['strike']
+                                break
+                    
+                    expiry_date = get_next_expiry(cfg.symbol)
+
+                    log_trade(
+                        symbol=cfg.symbol,
+                        strategy=BASE_STRATEGY_CATEGORY,
+                        signal_type=f"ENTER:{strat.name.upper()}",
+                        price=trade_price,
+                        qty=cfg.lot_size,
+                        sl=0, # Complex structure, SL is managed manually or via PnL check
+                        tp=0,
+                        asset_type="OPTION",
+                        strike_price=anchor_strike,
+                        expiry_date=expiry_date
+                    )
                     
         except Exception as e:
             logger.error(f"Error scanning {cfg.symbol}: {e}")

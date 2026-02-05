@@ -55,25 +55,72 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
                 df['asset_type'] = 'STOCK' # Default
 
             # Fetch Real-Time Prices
-            tickers = [f"{s}.NS" for s in df['symbol'].unique()]
-            try:
-                # Batch download for speed
-                data = yf.download(tickers, period="1d", progress=False)['Close']
-                # If only one ticker, data is Series, make DataFrame
-                if isinstance(data, pd.Series):
-                     data = data.to_frame(name=tickers[0])
-                live_prices = data.iloc[-1]
-            except Exception as e:
-                logger.error(f"Failed to fetch live prices: {e}")
-                live_prices = {}
+            # Only fetch for STOCKS. For Options, we can't get live premium easily, so we skip to avoid displaying massive PnL against Spot.
+            stock_df = df[df['asset_type'] == 'STOCK']
+            live_prices = {}
+
+            if not stock_df.empty:
+                unique_symbols = stock_df['symbol'].unique()
+                ticker_map = {}
                 
+                # Build correct tickers
+                download_list = []
+                for s in unique_symbols:
+                    if s == 'NIFTY':
+                        y_ticker = '^NSEI'
+                    elif s == 'BANKNIFTY':
+                        y_ticker = '^NSEBANK'
+                    elif s == 'SENSEX':
+                        y_ticker = '^BSESN'
+                    else:
+                        y_ticker = f"{s}.NS"
+                    
+                    ticker_map[s] = y_ticker
+                    download_list.append(y_ticker)
+
+                try:
+                    # Batch download for speed
+                    if download_list:
+                        data = yf.download(download_list, period="1d", progress=False)['Close']
+                        
+                        # Handle single ticker result (Series) vs multiple (DataFrame)
+                        if len(download_list) == 1:
+                            # If single ticker, it returns a Series or single-col DataFrame depending on version
+                            # We normalize to scalar access
+                             val = data.iloc[-1]
+                             if isinstance(val, pd.Series):
+                                 val = val.item()
+                             live_prices[download_list[0]] = val
+                        else:
+                             # DataFrame result
+                             last_row = data.iloc[-1]
+                             for t in download_list:
+                                 if t in last_row:
+                                     live_prices[t] = last_row[t]
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch live prices: {e}")
+
             # Calc PnL
-            df['cmp'] = df['symbol'].apply(lambda x: live_prices.get(f"{x}.NS", 0.0) if isinstance(live_prices, (dict, pd.Series)) else 0.0)
-            # Handle missing CMP
-            df['cmp'] = df.apply(
-                lambda row: row['entry_price'] if row['cmp'] == 0 or pd.isna(row['cmp']) else row['cmp'], 
-                axis=1
-            )
+            def get_current_price(row):
+                if row['asset_type'] == 'OPTION':
+                    # For options, we don't have live premiums. 
+                    # Return entry_price so PnL is 0 (Neutral view) instead of insane numbers against Spot.
+                    return row['entry_price']
+                
+                # For Stocks, looks up via mapped ticker
+                sym = row['symbol']
+                # Re-construct key
+                if sym == 'NIFTY': key = '^NSEI'
+                elif sym == 'BANKNIFTY': key = '^NSEBANK'
+                else: key = f"{sym}.NS"
+                
+                price = live_prices.get(key, 0.0)
+                if pd.isna(price) or price == 0:
+                    return row['entry_price']
+                return price
+
+            df['cmp'] = df.apply(get_current_price, axis=1)
             
             df['invested'] = df['entry_price'] * df['quantity']
             df['current_val'] = df['cmp'] * df['quantity']
@@ -123,15 +170,25 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
                        s_pos_count = len(strat_pos)
                 
                 # Metrics
-                current_balance = cash + s_invested
+                current_balance = cash + s_invested # Equity Value
                 realized_pnl = current_balance - allocation
+                
+                # Visual Adjustment for "Strategy Book" table
+                # For Credit Strategies (s_invested < 0), "Invested" showing negative is confusing.
+                # Also, "Available" showing (Base + Credit) implies increased buying power, which is risky.
+                # We normalize strictly for the Table View:
+                # Invested = Abs(Exposure)
+                # Available = Equity - Abs(Exposure)
+                
+                display_invested = abs(s_invested)
+                safe_available = current_balance - display_invested
                 
                 strategy_capital[strat] = {
                     'base': allocation,
                     'realized_pnl': realized_pnl,
                     'current_balance': current_balance,
-                    'invested': s_invested,
-                    'available_cash': cash,
+                    'invested': display_invested,
+                    'available_cash': safe_available,
                     'open_positions': s_pos_count
                 }
 
