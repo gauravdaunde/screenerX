@@ -223,13 +223,38 @@ def run_live_scan():
                     # Capture raw cost for logging (Negative = Debit, Positive = Credit)
                     raw_entry_cost = entry_cost
                             
+                    # Position Sizing
+                    # Target Deployment per trade (e.g. 25% of 100k = 25k)
+                    PER_TRADE_ALLOCATION_PCT = 0.25
+                    target_capital = CAPITAL_ALLOCATION * PER_TRADE_ALLOCATION_PCT
+                    
+                    capital_per_lot = 0.0
+                    if entry_cost > 0: # Credit Strategy (Margin Blocking)
+                        # Approx Margin = Spread Width * Lot Size
+                        capital_per_lot = cfg.width * cfg.lot_size
+                    else: # Debit Strategy (Premium Paid)
+                        capital_per_lot = abs(entry_cost) * cfg.lot_size
+                        
+                    # Calculate Lots (Floor)
+                    num_lots = 1
+                    if capital_per_lot > 0:
+                        num_lots = int(target_capital / capital_per_lot)
+                        
+                    # Safety bounds
+                    num_lots = max(1, min(num_lots, 10)) # Min 1, Max 10 lots
+                    
+                    total_qty = num_lots * cfg.lot_size
+                    
+                    # Log sizing decision
+                    logger.info(f"Sizing: Target ₹{target_capital/1000:.1f}k | Cost/Lot ₹{capital_per_lot/1000:.1f}k -> {num_lots} Lots")
+
                     # PnL Estimates with STOP LOSS Logic (Managed Risk)
                     max_profit = 0
                     managed_risk = 0
                     risk_type_label = ""
                     
                     if entry_cost > 0: # Net Credit (Iron Condor)
-                         credit_collected = entry_cost * cfg.lot_size
+                         credit_collected = entry_cost * total_qty
                          
                          # Our Backtest Logic: Stop @ 2.0 * Premium Value (i.e., loss = 2 * Premium)
                          max_profit = credit_collected
@@ -239,7 +264,7 @@ def run_live_scan():
                     else: # Net Debit (Spreads)
                          # Debit Spreads usually defined risk = entry cost.
                          entry_cost = abs(entry_cost)
-                         total_cost = entry_cost * cfg.lot_size
+                         total_cost = entry_cost * total_qty
                          
                          # Backtest Logic: Stop @ 50% of Premium Paid.
                          managed_risk = total_cost * 0.5
@@ -256,8 +281,8 @@ def run_live_scan():
                         f"Type: {BASE_STRATEGY_CATEGORY}\n\n"
                         f"Spot: {spot:.0f} | VIX: {vix:.2f}\n"
                         f"{legs_str}\n\n"
+                        f"� <b>Position Size: {num_lots} Lots ({total_qty} Qty)</b>\n"
                         f"💰 {risk_reward}\n"
-                        f"Lot Size: {cfg.lot_size}\n"
                         f"Conf: {signal.get('confidence', 0)}%"
                     )
                     
@@ -291,7 +316,7 @@ def run_live_scan():
                         strategy=BASE_STRATEGY_CATEGORY,
                         signal_type=f"ENTER:{strat.name.upper()}",
                         price=trade_price,
-                        qty=cfg.lot_size,
+                        qty=total_qty,
                         sl=0, # Complex structure, SL is managed manually or via PnL check
                         tp=0,
                         asset_type="OPTION",
