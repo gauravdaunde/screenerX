@@ -1,4 +1,10 @@
 
+import sys
+import os
+
+# Fix for ModuleNotFoundError when running as script
+sys.path.append(os.getcwd())
+
 import logging
 from datetime import datetime
 import pandas as pd
