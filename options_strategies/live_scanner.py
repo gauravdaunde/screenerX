@@ -278,6 +278,30 @@ def run_live_scan():
                 BullCallSpread(cfg),
                 BearPutSpread(cfg)
             ]
+
+            # --- UPDATE PnL FOR EXISTING TRADE ---
+            if existing_trade:
+                try:
+                    # Unpack: ID, Type, Price, Qty, Strike, Expiry
+                    t_id = existing_trade[0]
+                    s_type = existing_trade[1] # e.g. "ENTER:IRON CONDOR"
+                    
+                    # Identify Strat
+                    strat_obj = None
+                    trade_strat_name = s_type.split(":")[1].replace(" ", "").upper() if ":" in s_type else s_type.upper()
+                    
+                    for s in strategies:
+                        if s.name.replace(" ", "").upper() == trade_strat_name:
+                            strat_obj = s
+                            break
+                    
+                    if strat_obj:
+                        pnl_val, pnl_pct = calculate_pnl_update(existing_trade, spot, vix, strat_obj, cfg)
+                        from app.db.database import update_trade_pnl
+                        update_trade_pnl(t_id, pnl_val)
+                        logger.info(f"Updated Unrealized PnL for {cfg.symbol}: ₹{pnl_val:.2f}")
+                except Exception as e:
+                    logger.error(f"Failed to update PnL for {cfg.symbol}: {e}")
             
             for strat in strategies:
                 # Early check: If NO Open Position, did we already signal this strategy today?

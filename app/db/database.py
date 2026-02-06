@@ -167,5 +167,15 @@ def close_trade_in_db(trade_id: int, exit_price: float, reason: str) -> float:
     logger.info(f"💰 Trade Closed: {symbol} | Exit Value: ₹{exit_value:,.2f} | PnL: ₹{pnl:+,.2f} | Wallet: {strategy}")
     return pnl
 
+def update_trade_pnl(trade_id: int, pnl_val: float):
+    """
+    Updates the PnL of an OPEN trade without closing it.
+    Useful for tracking unrealized PnL in the database.
+    """
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute('UPDATE trades SET pnl = ? WHERE id = ?', (pnl_val, trade_id))
+        conn.commit()
+
 if __name__ == "__main__":
     init_db()

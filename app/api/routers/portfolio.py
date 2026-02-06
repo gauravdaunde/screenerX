@@ -104,8 +104,9 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
             # Calc PnL
             def get_current_price(row):
                 if row['asset_type'] == 'OPTION':
-                    # For options, we don't have live premiums. 
-                    # Return entry_price so PnL is 0 (Neutral view) instead of insane numbers against Spot.
+                    # For options, we use the stored entry_price. 
+                    # We will derive the "Live CMP" from the stored PnL (updated by live_scanner.py)
+                    # If PnL is 0, we assume CMP = Entry
                     return row['entry_price']
                 
                 # For Stocks, looks up via mapped ticker
@@ -122,16 +123,52 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
 
             df['cmp'] = df.apply(get_current_price, axis=1)
             
-            df['invested'] = df['entry_price'] * df['quantity']
-            df['current_val'] = df['cmp'] * df['quantity']
-            df['pnl'] = df['current_val'] - df['invested']
-            df['pnl_pct'] = (df['pnl'] / df['invested']) * 100
+            df['invested'] = df['entry_price'] * df['quantity'] 
+            
+            # PnL Logic:
+            # 1. Stocks: Calc from Live CMP
+            # 2. Options: Use stored DB PnL (from scanner updates), back-calculate CMP
+            def calc_row_pnl(row):
+                if row['asset_type'] == 'OPTION':
+                    # Use stored PnL from DB if available
+                    return row.get('pnl', 0.0) or 0.0
+                else:
+                    current_val = row['cmp'] * row['quantity']
+                    return current_val - row['invested']
+
+            df['pnl'] = df.apply(calc_row_pnl, axis=1)
+            
+            # Recalculate Current Value & CMP (for Display) based on PnL
+            df['current_val'] = df['invested'] + df['pnl']
+            
+            # Back-calc CMP for Options so it reflects the PnL movement
+            def adjust_cmp(row):
+                if row['asset_type'] == 'OPTION':
+                    if row['quantity'] != 0:
+                        return row['current_val'] / row['quantity']
+                return row['cmp']
+                
+            df['cmp'] = df.apply(adjust_cmp, axis=1)
+            df['pnl_pct'] = df.apply(lambda r: (r['pnl'] / r['invested'] * 100) if r['invested'] != 0 else 0, axis=1)
             
             # Format for display (HTML in DF)
             df['pnl_display'] = df.apply(lambda row: f"<span class='fw-bold' style='color: {'#198754' if row['pnl']>=0 else '#dc3545'}'>{row['pnl']:+,.2f} ({row['pnl_pct']:+,.1f}%)</span>", axis=1)
+            
+            # Handle negative CMP (Credit Strategies) -> Show as negative
             df['cmp_display'] = df['cmp'].apply(lambda x: f"₹{x:,.2f}")
             df['entry_display'] = df['entry_price'].apply(lambda x: f"₹{x:,.2f}")
             
+            # Format Strike/Expiry
+            if 'strike_price' in df.columns:
+                df['strike_display'] = df['strike_price'].fillna(0).apply(lambda x: f"{x:,.0f}" if x > 0 else "-")
+            else:
+                 df['strike_display'] = "-"
+                 
+            if 'expiry_date' in df.columns:
+                df['expiry_display'] = df['expiry_date'].fillna("-")
+            else:
+                df['expiry_display'] = "-"
+
             # Aggregates
             total_invested = df['invested'].sum()
             current_value = df['current_val'].sum()
@@ -139,18 +176,23 @@ def view_portfolio(request: Request, api_key: str = Depends(get_api_key)):
             
             # Filter Dataframes
             stocks_df = df[df['asset_type'] == 'STOCK'].copy()
-            options_df = df[df['asset_type'] == 'OPTION'].copy()
+            options_df = df[df['asset_type'] != 'STOCK'].copy() # Treat anything not STOCK as Option
 
             # Generate Tables
-            cols = ['strategy', 'symbol', 'quantity', 'entry_display', 'cmp_display', 'pnl_display', 'tp', 'sl']
-            rename_map = {'strategy': 'Strategy', 'symbol':'Symbol', 'quantity':'Qty', 'entry_display':'Entry', 'cmp_display':'CMP', 'pnl_display':'PnL', 'tp':'Target', 'sl':'Stop Loss'}
+            # Stocks Table
+            stock_cols = ['strategy', 'symbol', 'quantity', 'entry_display', 'cmp_display', 'pnl_display', 'tp', 'sl']
+            stock_renames = {'strategy': 'Strategy', 'symbol':'Symbol', 'quantity':'Qty', 'entry_display':'Entry', 'cmp_display':'CMP', 'pnl_display':'PnL', 'tp':'Target', 'sl':'Stop Loss'}
             
             if not stocks_df.empty:
-                stocks_html = stocks_df[cols].rename(columns=rename_map).to_html(classes='table table-hover align-middle', escape=False, index=False)
+                stocks_html = stocks_df[stock_cols].rename(columns=stock_renames).to_html(classes='table table-hover align-middle', escape=False, index=False)
+            
+            # Options Table (Added Strike, Expiry)
+            # Remove TP/SL for options as they are complex strategies
+            opt_cols = ['strategy', 'symbol', 'strike_display', 'expiry_display',  'quantity', 'entry_display', 'cmp_display', 'pnl_display']
+            opt_renames = {'strategy': 'Strategy', 'symbol':'Symbol', 'strike_display': 'Strike', 'expiry_display': 'Expiry', 'quantity':'Qty', 'entry_display':'Entry', 'cmp_display':'CMP', 'pnl_display':'PnL'}
             
             if not options_df.empty:
-                # Use same cols for now
-                options_html = options_df[cols].rename(columns=rename_map).to_html(classes='table table-hover align-middle', escape=False, index=False)
+                options_html = options_df[opt_cols].rename(columns=opt_renames).to_html(classes='table table-hover align-middle', escape=False, index=False)
 
         # Build Strategy Capital Dict (Real Data from DB)
         if not wallets_df.empty:
