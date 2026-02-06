@@ -142,6 +142,10 @@ def monitor_positions():
         trade_id = row['id']
         strategy = row.get('strategy', 'SWING') # Default to old
         
+        # SKIP OPTION STRATEGIES (Managed by live_scanner.py Updates)
+        if strategy == 'SWING_OPTIONS' or strategy.startswith('SWING_OPTIONS'):
+            continue
+            
         sl = row['sl']
         tp = row['tp']
         signal_type = row['signal_type'] # BUY
