@@ -35,11 +35,16 @@ def _check_common_filters(ind: MarketIndicators) -> tuple:
     reasons = []
     
     # 1. Volume Filter (CRITICAL) - Stricter threshold
-    if ind.volume_ratio < 1.0:
-        return False, 0.5, ["Volume below average"]
-    elif ind.volume_ratio < 1.2:
-        penalty += 0.15
-        reasons.append("⚠️ Marginally above-avg volume")
+    # 1. Volume Filter (CRITICAL)
+    from app.core.config import STRICT_VOLUME_FILTER
+    
+    threshold = 1.0 if STRICT_VOLUME_FILTER else 0.5
+    
+    if ind.volume_ratio < threshold:
+        return False, 0.5, [f"Volume dead (<{threshold}x avg)"]
+    elif ind.volume_ratio < 1.0:
+        penalty += 0.2
+        reasons.append("⚠️ Below-avg volume")
     
     # 2. ATR Spike (News/Event risk)
     # If today's range is > 2x ATR, likely news-driven
@@ -187,13 +192,9 @@ def strategy_bb_mean_reversion(symbol: str, ind: MarketIndicators) -> SwingSigna
     score = 0.0
     reasons = []
     
-    # OPTIMIZATION: Strict sideways filter
-    if ind.trend != "SIDEWAYS":
-        return SwingSignal(
-            symbol=symbol, strategy_name="BB Mean Reversion", signal="HOLD",
-            confidence=0, stop_loss_type="BAND", target_type="BAND",
-            reason="Requires sideways market"
-        )
+    # OPTIMIZATION: Relaxed Trend Filter
+    # Previously strict 'SIDEWAYS' only, which missed deep pullback opportunities or crash reversals.
+    # Now we allow entry but penalize 'Counter-Trend' moves unless RSI is extreme.
     
     pass_filter, penalty, filter_reasons = _check_common_filters(ind)
     if not pass_filter:
@@ -211,26 +212,40 @@ def strategy_bb_mean_reversion(symbol: str, ind: MarketIndicators) -> SwingSigna
         score = 0.4
         reasons.append("Price at lower BB")
         
-        # OPTIMIZATION: RSI must be < 30 (not just 35)
-        if ind.rsi < 30:
+        # OPTIMIZATION: RSI must be < 32 (was 30) for big bonus
+        if ind.rsi < 32:
             score += 0.3
             reasons.append(f"RSI oversold ({ind.rsi:.0f})")
-        elif ind.rsi < 35:
+        elif ind.rsi < 40: # Was 35
             score += 0.15
         else:
-            score -= 0.2
+            score -= 0.1 # Reduced penalty
             reasons.append("RSI not oversold enough")
         
         # OPTIMIZATION: Reversal candle (bullish)
-        if ind.close > ind.open:
+        if ind.close >= ind.open: # Allow Doji
             score += 0.2
-            reasons.append("Bullish reversal candle")
+            reasons.append("Bullish/Neut candle")
         else:
-            score -= 0.15
+            score -= 0.1
         
         # OPTIMIZATION: Volume on reversal
         if ind.volume_ratio > 1.2:
             score += 0.1
+
+        # Trend Context (BUY)
+        if ind.trend == "SIDEWAYS":
+            score += 0.1
+            reasons.append("Sideways context")
+        elif ind.trend == "UP":
+            score += 0.15 # Buying dip in uptrend
+            reasons.append("Dip in Uptrend")
+        elif ind.trend == "DOWN":
+             # Reduced penalty if RSI is deeply oversold
+            if ind.rsi < 25:
+                score += 0.05
+            else:
+                score -= 0.1 # Counter-trend risk
             
     # Sell at upper band
     elif ind.close >= ind.bb_upper:
@@ -238,19 +253,32 @@ def strategy_bb_mean_reversion(symbol: str, ind: MarketIndicators) -> SwingSigna
         score = 0.4
         reasons.append("Price at upper BB")
         
-        if ind.rsi > 70:
+        if ind.rsi > 68: # Was 70
             score += 0.3
             reasons.append(f"RSI overbought ({ind.rsi:.0f})")
-        elif ind.rsi > 65:
+        elif ind.rsi > 60: # Was 65
             score += 0.15
         else:
-            score -= 0.2
+            score -= 0.1
         
-        if ind.close < ind.open:
+        if ind.close <= ind.open:
             score += 0.2
-            reasons.append("Bearish reversal candle")
+            reasons.append("Bearish/Neut reversal candle")
         else:
-            score -= 0.15
+            score -= 0.1
+            
+        # Trend Context (SELL)
+        if ind.trend == "SIDEWAYS":
+            score += 0.1
+            reasons.append("Sideways context")
+        elif ind.trend == "DOWN":
+            score += 0.15 # Selling rally in downtrend
+            reasons.append("Rally in Downtrend")
+        elif ind.trend == "UP":
+            if ind.rsi > 75:
+                 score += 0.05
+            else:
+                 score -= 0.1 # Counter-trend risk
     
     score -= penalty
     
@@ -265,7 +293,7 @@ def strategy_bb_mean_reversion(symbol: str, ind: MarketIndicators) -> SwingSigna
     return SwingSignal(
         symbol=symbol,
         strategy_name="BB Mean Reversion",
-        signal=signal if score >= 0.65 else "HOLD",  # Lower threshold - best avg P&L strategy
+        signal=signal if score >= 0.55 else "HOLD",  # Lower threshold (was 0.65)
         confidence=min(max(score, 0), 1.0),
         stop_loss_type="BAND",
         target_type="BAND",

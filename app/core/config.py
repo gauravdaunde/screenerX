@@ -44,3 +44,8 @@ DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
 
 # --- DATABASE CONFIG ---
 DB_NAME = "trades.db"
+
+# --- STRATEGY CONFIG ---
+# If True, enforces strict volume filter (rejects < 1.0x avg).
+# If False, uses relaxed filter (rejects < 0.5x avg).
+STRICT_VOLUME_FILTER = os.getenv("STRICT_VOLUME_FILTER", "False").lower() == "true"

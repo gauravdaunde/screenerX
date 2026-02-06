@@ -101,6 +101,7 @@ def get_swing_signals(symbols):
                     qty = int(CAPITAL_PER_TRADE / price) if price > 0 else 0
                     st_signal['quantity'] = qty
                     st_signal['invested_value'] = qty * price
+                    st_signal['price'] = price
                     all_signals.append(st_signal)
 
             # --- 2. NEW: Strategy Suite (MACD, BB, EMA, Pullback, Breakout) ---
@@ -118,6 +119,7 @@ def get_swing_signals(symbols):
                      suite_signal['quantity'] = qty
                      suite_signal['invested_value'] = qty * price
                      suite_signal['price'] = price # Normalize key if needed
+                     suite_signal['strategy'] = suite_signal.get('strategy_name', 'Unknown Strategy')
                      all_signals.append(suite_signal)
                 
         except Exception as e:
