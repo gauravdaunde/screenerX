@@ -25,7 +25,8 @@ from swing_strategies.dispatcher import swing_strategy_dispatcher
 # Load environment variables
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_CHANNEL_ID")
+
 
 
 def send_telegram_report(signals):

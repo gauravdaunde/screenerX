@@ -3,239 +3,164 @@ import logging
 import sys
 import os
 import time
-import pandas as pd
-import numpy as np
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from app.core import config
+from options_strategies.new_nifty_scanner import NiftyScalper
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("NiftyScalperLive")
 
 class NiftyScalperLive:
     """
-    Live Scalper for NIFTY using DhanHQ API.
-    Uses NIFTY INDEX SPOT Data (ID 13).
-    Strategy: 5-min EMA Pullback Trend Following (Jackpot Hunt RR 3.0).
+    Live Scalper Orchestrator for NIFTY. 
+    Manages up to 2 parallel trades with 2 lots each.
+    Uses logic from new_nifty_scanner.py for entries.
     """
     def __init__(self):
-        from app.core.dhan_client import get_dhan_client
-        self.dhan = get_dhan_client()
-        
-        # CONFIG: NIFTY SPOT INDEX
-        self.security_id = '13' 
-        self.exchange_segment = 'IDX_I'
-        self.instrument_type = 'INDEX'
+        # Configuration
         self.symbol = "NIFTY-INDEX"
-        self.interval = 5 
+        self.scanner = NiftyScalper(symbol=self.symbol)
         
-        # Telegram
+        # Risk Management
+        self.max_parallel_trades = 2
+        self.lots_per_trade = 2
+        self.lot_size = 25  # Standard Nifty Lot Size as of 2024/25
+        
+        # Telegram Credentials
         self.telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        self.chat_id = os.getenv("TELEGRAM_BOT_CHAT_ID") or os.getenv("TELEGRAM_CHAT_CHANNEL_ID")
+
+
         
         # State
-        self.df = None
-        self.last_candle_time = None
-        self.in_position = False
-        
-        # Strategy Params
-        self.ema_fast = 20
-        self.ema_slow = 50
-        self.ema_trend = 200
-        self.rsi_period = 14
-        self.risk_reward = 3.0 # JACKPOT HUNT
-        
+        self.active_positions = [] # List of {type, entry, sl, tp, strat, timestamp}
+        self.processed_timestamps = set()
+
     def send_telegram(self, message):
+        """Sends a Telegram message if credentials are available."""
         if not self.telegram_token or not self.chat_id:
-            logging.warning("Telegram credentials missing.")
+            logger.warning("Telegram Bot Token or Chat ID not found in environment.")
             return
-        
+            
         url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
         data = {"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}
         try:
-            requests.post(url, data=data)
+            requests.post(url, data=data, timeout=10)
         except Exception as e:
-            logging.error(f"Telegram Send Error: {e}")
+            logger.error(f"Failed to send Telegram alert: {e}")
 
-    def fetch_data(self):
-        """Fetch ~5 days of data"""
-        try:
-            to_date = datetime.now().strftime('%Y-%m-%d')
-            from_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
-            
-            res = self.dhan.intraday_minute_data(
-                security_id=self.security_id,
-                exchange_segment=self.exchange_segment,
-                instrument_type=self.instrument_type,
-                from_date=from_date,
-                to_date=to_date,
-                interval=self.interval
-            )
-            
-            if res.get('status') == 'failure':
-                logging.error(f"Dhan Data Fetch Failed: {res.get('remarks')}")
-                return False
-                
-            data = res.get('data')
-            if not data:
-                logging.warning("No data returned.")
-                return False
-                
-            df = pd.DataFrame(data)
-            
-            if 'start_Time' in df.columns:
-                 df['datetime'] = pd.to_datetime(df['start_Time'], unit='s')
-            elif 'timestamp' in df.columns:
-                 df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-            elif 'k' in df.columns:
-                 df['datetime'] = pd.to_datetime(df['k'], unit='s')
-            else:
-                 logging.error(f"Unknown date columns: {df.columns}")
-                 return False
-            
-            df = df.set_index('datetime')
-            df.index = pd.to_datetime(df.index)
-            # IST Convert for Display/Log logic (optional, but good for logs)
-            # df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata') 
-            # Dhan returns UTC timestamp usually.
-            
-            rename = {'o':'open','h':'high','l':'low','c':'close','v':'volume'}
-            df = df.rename(columns=rename)
-            
-            req = ['open','high','low','close']
-            df = df[[c for c in req if c in df.columns]].astype(float)
-            
-            self.df = df
-            logging.info(f"Fetched {len(df)} candles.")
-            return True
-            
-        except Exception as e:
-            logging.error(f"Fetch Data Error: {e}")
-            return False
-
-    def calculate_indicators(self):
-        if self.df is None or self.df.empty:
+    def manage_positions(self, current_price):
+        """
+        Monitors active positions for SL/TP hits.
+        Args:
+            current_price (float): Latest spot price of Nifty.
+        """
+        if not self.active_positions:
             return
 
-        df = self.df
-        
-        # EMAs
-        df['ema_20'] = df['close'].ewm(span=self.ema_fast, adjust=False).mean()
-        df['ema_50'] = df['close'].ewm(span=self.ema_slow, adjust=False).mean()
-        df['ema_200'] = df['close'].ewm(span=self.ema_trend, adjust=False).mean()
-        
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # ATR
-        df['tr'] = np.maximum(df['high'] - df['low'], 
-                              np.maximum(abs(df['high'] - df['close'].shift(1)), 
-                                         abs(df['low'] - df['close'].shift(1))))
-        df['atr'] = df['tr'].rolling(14).mean()
-        
-        # ADX
-        df['up_move'] = df['high'] - df['high'].shift(1)
-        df['down_move'] = df['low'].shift(1) - df['low']
-        df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
-        df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
-        
-        df['plus_di'] = 100 * (df['plus_dm'].ewm(span=14).mean() / df['atr'])
-        df['minus_di'] = 100 * (df['minus_dm'].ewm(span=14).mean() / df['atr'])
-        df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
-        df['adx'] = df['dx'].ewm(span=14).mean()
-        
-        self.df = df
-
-    def check_signal(self):
-        if self.df is None or len(self.df) < 50:
-            return
+        for pos in self.active_positions[:]:
+            exit_reason = None
+            pnl_pts = 0
             
-        last_row = self.df.iloc[-1]
-        last_time = self.df.index[-1]
-        
-        if self.last_candle_time == last_time:
-            return
+            if pos['type'] == 'ENTER_LONG':
+                if current_price <= pos['sl']:
+                    exit_reason = "STOP LOSS HIT 🛑"
+                    pnl_pts = pos['sl'] - pos['entry']
+                elif current_price >= pos['tp']:
+                    exit_reason = "TARGET HIT 🎯 (3.0R)"
+                    pnl_pts = pos['tp'] - pos['entry']
             
-        self.last_candle_time = last_time
-        
-        close = last_row['close']
-        high = last_row['high']
-        low = last_row['low']
-        open_p = last_row['open']
-        ema20 = last_row['ema_20']
-        ema50 = last_row['ema_50']
-        ema200 = last_row['ema_200']
-        rsi = last_row['rsi']
-        adx = last_row['adx']
-        atr = last_row['atr']
-        
-        logging.info(f"Analysis at {last_time}: Close={close}, EMA20={ema20:.2f}, RSI={rsi:.2f}")
-        
-        # LONG Checks
-        is_uptrend = close > ema20 and ema20 > ema50 and ema50 > ema200
-        touched_zone_long = low <= (ema20 * 1.0005) and close > ema20
-        is_green = close > open_p
-        rsi_ok_long = 40 <= rsi <= 65
-        adx_ok = adx > 20
-        
-        if is_uptrend and touched_zone_long and is_green and rsi_ok_long and adx_ok:
-            trigger_entry = high + 1
-            stop_loss = low - (atr * 1.5)
-            risk = trigger_entry - stop_loss
-            if risk > 0:
-                target = trigger_entry + (risk * self.risk_reward)
-                msg = (f"🚀 *LONG SIGNAL (Jackpot 3.0)* - {self.symbol}\n"
-                       f"Time: {last_time}\n"
-                       f"👉 ENTER Above: {trigger_entry:.2f}\n"
-                       f"🛑 Stop Loss: {stop_loss:.2f}\n"
-                       f"🎯 Target: {target:.2f} (RR 3.0)\n"
-                       f"Risk: {risk:.2f} pts")
-                print(msg)
+            elif pos['type'] == 'ENTER_SHORT':
+                if current_price >= pos['sl']:
+                    exit_reason = "STOP LOSS HIT 🛑"
+                    pnl_pts = pos['entry'] - pos['sl']
+                elif current_price <= pos['tp']:
+                    exit_reason = "TARGET HIT 🎯 (3.0R)"
+                    pnl_pts = pos['entry'] - pos['tp']
+            
+            if exit_reason:
+                total_pnl = pnl_pts * (self.lots_per_trade * self.lot_size)
+                msg = (
+                    f"🏁 *TRADE CLOSED*: {self.symbol}\n"
+                    f"Reason: {exit_reason}\n"
+                    f"Strategy: `{pos['strat']}`\n"
+                    f"Exit Price: {current_price:.2f}\n"
+                    f"Est. PnL: ₹{total_pnl:.2f} ({pnl_pts:.2f} pts)"
+                )
+                logger.info(f"Position Closed: {pos['strat']} | {exit_reason}")
                 self.send_telegram(msg)
-                return
-
-        # SHORT Checks
-        is_downtrend = close < ema20 and ema20 < ema50 and ema50 < ema200
-        touched_zone_short = high >= (ema20 * 0.9995) and close < ema20
-        is_red = close < open_p
-        rsi_ok_short = 35 <= rsi <= 60
-        
-        if is_downtrend and touched_zone_short and is_red and rsi_ok_short and adx_ok:
-            trigger_entry = low - 1
-            stop_loss = high + (atr * 1.5)
-            risk = stop_loss - trigger_entry
-            if risk > 0:
-                target = trigger_entry - (risk * self.risk_reward)
-                msg = (f"🔻 *SHORT SIGNAL (Jackpot 3.0)* - {self.symbol}\n"
-                       f"Time: {last_time}\n"
-                       f"👉 ENTER Below: {trigger_entry:.2f}\n"
-                       f"🛑 Stop Loss: {stop_loss:.2f}\n"
-                       f"🎯 Target: {target:.2f} (RR 3.0)\n"
-                       f"Risk: {risk:.2f} pts")
-                print(msg)
-                self.send_telegram(msg)
-                return
+                self.active_positions.remove(pos)
 
     def run(self):
-        logging.info(f"Starting Live Scalper for {self.symbol}...")
-        self.send_telegram(f"🤖 Nifty Scalper Started on {self.symbol} (RR 3.0)")
-        
+        """Main execution loop."""
+        logger.info(f"🚀 NiftyScalperLive Started (Max Trades: {self.max_parallel_trades}, Lots: {self.lots_per_trade})")
+        self.send_telegram(f"🤖 *Nifty Scalper Live Active*\nParallel Limits: {self.max_parallel_trades}\nLots: {self.lots_per_trade}\nStatus: Monitoring Market...")
+
         while True:
             try:
-                if self.fetch_data():
-                    self.calculate_indicators()
-                    self.check_signal()
-            except Exception as e:
-                logging.error(f"Itertation Error: {e}")
+                # 1. Fetch latest data via scanner
+                df = self.scanner.fetch_data()
+                if df.empty:
+                    logger.warning("Failed to fetch Nifty data. Retrying...")
+                    time.sleep(30)
+                    continue
                 
-            logging.info("Sleeping for 60s...")
+                current_price = df.iloc[-1]['close']
+                
+                # 2. Manage Active Positions (Check SL/TP)
+                self.manage_positions(current_price)
+                
+                # 3. Only scan for new entries if we have room
+                if len(self.active_positions) < self.max_parallel_trades:
+                    # Indirectly run scan by calling it on the scanner
+                    # But since we already have data, we can optimize later, 
+                    # but for now let's use the scanner.scan() for consistency
+                    signal = self.scanner.scan()
+                    
+                    if signal.action != "WAIT" and signal.timestamp not in self.processed_timestamps:
+                        # New Entry Found
+                        self.processed_timestamps.add(signal.timestamp)
+                        
+                        # Add to active positions
+                        new_pos = {
+                            'type': signal.action,
+                            'entry': signal.entry_price,
+                            'sl': signal.stop_loss,
+                            'tp': signal.target,
+                            'strat': signal.strategy_name,
+                            'ts': signal.timestamp
+                        }
+                        self.active_positions.append(new_pos)
+                        
+                        # Prepare Alert
+                        emoji = "🚀" if "LONG" in signal.action else "🔻"
+                        strat_emoji = "🎯" if "STRICT" in signal.strategy_name else "📈"
+                        
+                        msg = (
+                            f"{emoji} *OPENING TRADE ({self.lots_per_trade} Lots)* - {self.symbol}\n"
+                            f"{strat_emoji} Strategy: `{signal.strategy_name}`\n"
+                            f"Time: {signal.timestamp}\n"
+                            f"-------------------\n"
+                            f"👉 *Entry Price*: {signal.entry_price:.2f}\n"
+                            f"🛑 *Stop Loss*: {signal.stop_loss:.2f}\n"
+                            f"🎯 *Target*: {signal.target:.2f}\n"
+                            f"⭐ *Active Trades*: {len(self.active_positions)}/{self.max_parallel_trades}"
+                        )
+                        
+                        logger.info(f"New Trade: {signal.strategy_name} {signal.action} @ {signal.entry_price}")
+                        self.send_telegram(msg)
+                
+                else:
+                    logger.info(f"Scan Paused: Max parallel trades ({self.max_parallel_trades}) reached. Monitoring...")
+
+            except Exception as e:
+                logger.error(f"Error in main loop: {e}")
+                
+            # Scan frequency: 60 seconds
             time.sleep(60)
 
 if __name__ == "__main__":

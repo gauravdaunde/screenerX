@@ -82,7 +82,8 @@ class Config:
     
     # Telegram Credentials
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_CHANNEL_ID", "")
+
     
     # Trading Parameters
     CAPITAL_PER_TRADE: float = 100000  # ₹1,00,000 per trade
