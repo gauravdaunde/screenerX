@@ -13,12 +13,14 @@ import sys
 import pandas as pd
 # import pandas_ta as ta  # Fallback to manual if missing
 import requests
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 
 # Import strategies and data
 from swing_strategies import NIFTY50, fetch_stock_data
 from swing_strategies.supertrend_pivot import scan_stock as scan_supertrend
+from swing_strategies.dispatcher import swing_strategy_dispatcher
 
 # Load environment variables
 load_dotenv()
@@ -76,8 +78,6 @@ def get_swing_signals(symbols):
     Run ALL swing strategies on a list of symbols.
     Returns list of signal dictionaries with 100k allocation sizing.
     """
-    from swing_strategies.dispatcher import swing_strategy_dispatcher
-    
     all_signals = []
     total = len(symbols)
     CAPITAL_PER_TRADE = 100000
@@ -85,8 +85,11 @@ def get_swing_signals(symbols):
     for idx, symbol in enumerate(symbols):
         print(f"\r[{idx+1}/{total}] Scanning {symbol:<15}", end="", flush=True)
         
+        # Rate Limit Prevention (Dhan API)
+        time.sleep(1)
+        
         try:
-            # Fetch data once (shared)
+            # Fetch data once (shared) - Now uses Dhan API via swing_strategies
             df = fetch_stock_data(symbol, period="1y")
             if df.empty or len(df) < 50:
                 continue
@@ -106,7 +109,7 @@ def get_swing_signals(symbols):
 
             # --- 2. NEW: Strategy Suite (MACD, BB, EMA, Pullback, Breakout) ---
             # using the dispatcher which picks the BEST of the suite
-            suite_signal = swing_strategy_dispatcher(df, symbol)
+            suite_signal = swing_strategy_dispatcher(symbol, df)
             
             if suite_signal and suite_signal.get('signal') != 'HOLD':
                  # Avoid duplicates if same strategy logic/name
@@ -136,6 +139,7 @@ def main():
     print(f"🚀 RUNNING DAILY SWING SCAN ({datetime.now().strftime('%Y-%m-%d')})")
     print("=" * 60)
     
+    # NIFTY50 is imported from swing_strategies (which now might use app.core.constants)
     signals = get_swing_signals(NIFTY50)
     print("\n\n✅ Scan Complete.")
     

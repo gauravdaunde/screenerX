@@ -1,5 +1,5 @@
 """
-NIFTY Iron Condor Trading System
+NIFTY Iron Condor Trading System - DhanHQ Version
 
 A focused, production-ready Iron Condor strategy for NIFTY Index only.
 Based on 3-year backtest showing 100% win rate on index options.
@@ -9,18 +9,21 @@ Usage:
     
     ic = NiftyIronCondor()
     signal = ic.scan()
-    
-    if signal['action'] == 'ENTER':
-        print(signal['trade_setup'])
 """
 
 import pandas as pd
 import numpy as np
-import yfinance as yf
+import os
 from dataclasses import dataclass
 from typing import Dict, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
+from dhanhq import dhanhq
+from dotenv import load_dotenv
 
+# Load Env
+load_dotenv(".env")
+if not os.getenv("DHAN_CLIENT_ID"):
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 @dataclass
 class IronCondorSetup:
@@ -39,22 +42,7 @@ class IronCondorSetup:
 
 class NiftyIronCondor:
     """
-    NIFTY Iron Condor Strategy.
-    
-    Entry Criteria (ALL must be true):
-    1. Market is SIDEWAYS (price near EMAs)
-    2. IV Rank > 40% (good premium)
-    3. No squeeze (breakout risk)
-    4. RSI between 35-65 (neutral)
-    
-    Position:
-    - Sell OTM Call + Buy further OTM Call
-    - Sell OTM Put + Buy further OTM Put
-    
-    Exit Rules:
-    - Target: 50% of max profit
-    - Stop: 2x premium received
-    - Time: Exit 1 day before expiry
+    NIFTY Iron Condor Strategy (DhanHQ).
     """
     
     LOT_SIZE = 25
@@ -65,32 +53,77 @@ class NiftyIronCondor:
                  spread_width: int = 250,     # Width of each spread
                  target_pct: float = 0.5,     # Exit at 50% profit
                  stop_pct: float = 2.0):      # Exit at 2x loss
-        """
-        Initialize strategy.
         
-        Args:
-            wing_distance: Points from spot for short strikes (500 = ~2%)
-            spread_width: Width of protection (250 = ~1%)
-            target_pct: Profit target as % of max profit
-            stop_pct: Stop loss as multiple of premium
-        """
         self.wing_distance = wing_distance
         self.spread_width = spread_width
         self.target_pct = target_pct
         self.stop_pct = stop_pct
+        
+        # Init Dhan
+        try:
+            self.dhan = dhanhq(os.getenv("DHAN_CLIENT_ID"), os.getenv("DHAN_ACCESS_TOKEN"))
+            self.dhan.base_url = "https://api.dhan.co/v2"
+        except Exception as e:
+            print(f"Dhan init error: {e}")
+            self.dhan = None
     
     def fetch_data(self) -> pd.DataFrame:
-        """Fetch NIFTY data."""
-        data = yf.download("^NSEI", period="6mo", interval="1d", progress=False)
-        
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-        
-        data.columns = [c.lower() for c in data.columns]
-        return data
-    
+        """Fetch NIFTY data via Dhan."""
+        if not self.dhan:
+            return pd.DataFrame()
+            
+        try:
+            to_date = datetime.now().strftime('%Y-%m-%d')
+            # Need 6 months -> ~180 days
+            from_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+            
+            res = self.dhan.historical_daily_data(
+                security_id="13", # NIFTY 50
+                exchange_segment="IDX_I",
+                instrument_type="INDEX",
+                from_date=from_date,
+                to_date=to_date
+            )
+            
+            if res.get('status') != 'success' or not res.get('data'):
+                print("Dhan Fetch Failed or No Data")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(res['data'])
+            
+            # Robust Column Check
+            if 'start_Time' in df.columns:
+                 df['datetime'] = pd.to_datetime(df['start_Time'], unit='s')
+            elif 'timestamp' in df.columns:
+                 df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+            elif 'k' in df.columns:
+                 df['datetime'] = pd.to_datetime(df['k'], unit='s')
+            else:
+                 print(f"Unknown Columns in Response: {df.columns}")
+                 return pd.DataFrame()
+                 
+            df = df.set_index('datetime')
+            
+            rename = {'o':'open','h':'high','l':'low','c':'close','v':'volume'}
+            df = df.rename(columns=rename)
+            
+            req_cols = ['open','high','low','close']
+            if not all(c in df.columns for c in req_cols):
+                 pass
+                 
+            df = df[['open','high','low','close']].astype(float)
+            
+            return df
+            
+        except Exception as e:
+            print(f"Data Fetch Error: {e}")
+            return pd.DataFrame()
+            
     def calculate_indicators(self, df: pd.DataFrame) -> Dict:
         """Calculate all required indicators."""
+        if df.empty:
+            return {}
+
         close = df['close']
         
         # EMAs
@@ -123,7 +156,11 @@ class NiftyIronCondor:
         max_w = bb_width.rolling(100).max().iloc[-1]
         curr_w = bb_width.iloc[-1]
         
-        iv_rank = ((curr_w - min_w) / (max_w - min_w) * 100) if max_w != min_w else 50
+        iv_rank = 0
+        if max_w != min_w:
+             iv_rank = ((curr_w - min_w) / (max_w - min_w) * 100)
+        else:
+             iv_rank = 50
         
         # Squeeze detection
         atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
@@ -153,10 +190,8 @@ class NiftyIronCondor:
         call_buy = int(call_sell + self.spread_width)
         put_buy = int(put_sell - self.spread_width)
         
-        # Premium estimation (simplified)
-        # ATM ~ 1.5% of spot, decay exponentially OTM
+        # Premium estimation (theoretical since no option chain)
         base_premium = spot * 0.012
-        
         call_sell_prem = base_premium * np.exp(-self.wing_distance / spot * 8)
         call_buy_prem = base_premium * np.exp(-(self.wing_distance + self.spread_width) / spot * 8)
         put_sell_prem = base_premium * np.exp(-self.wing_distance / spot * 8)
@@ -180,15 +215,15 @@ class NiftyIronCondor:
         )
     
     def scan(self) -> Dict:
-        """
-        Scan NIFTY for Iron Condor opportunity.
-        
-        Returns:
-            Dict with signal, confidence, and trade setup
-        """
+        """Scan NIFTY for Iron Condor opportunity."""
         df = self.fetch_data()
+        if df.empty:
+            return {'action': 'WAIT', 'confidence': 0, 'reasons': ['No Data']}
+            
         indicators = self.calculate_indicators(df)
-        
+        if not indicators:
+             return {'action': 'WAIT', 'confidence': 0, 'reasons': ['Calculation Error']}
+             
         # Score calculation
         score = 0
         reasons = []
@@ -266,47 +301,45 @@ class NiftyIronCondor:
         
         emoji = "🟢" if signal['action'] == "ENTER" else "🟡"
         
+        if signal['action'] == 'WAIT' and 'reasons' in signal:
+             if 'No Data' in signal['reasons']:
+                 print("⚠️ No Data from Dhan API. Check credentials or connection.")
+                 # But also print reasons
+             
         print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║  🦅 NIFTY IRON CONDOR SIGNAL                                  ║
+║  🦅 NIFTY IRON CONDOR SIGNAL (DhanHQ)                        ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  {emoji} Action: {signal['action']:<10}  Confidence: {signal['confidence']}%              ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  📊 MARKET CONDITIONS                                         ║
-║  ├─ Spot:       ₹{signal['spot']:>10,.2f}                              ║
-║  ├─ IV Rank:    {signal['iv_rank']:>10.1f}%                              ║
-║  ├─ RSI:        {signal['rsi']:>10.1f}                               ║
-║  ├─ Sideways:   {'Yes' if signal['is_sideways'] else 'No':>10}                               ║
-║  └─ Squeeze:    {'⚠️ YES' if signal['squeeze'] else 'No':>10}                               ║
+║  ├─ Spot:       ₹{signal.get('spot', 0):>10,.2f}                              ║
+║  ├─ IV Rank:    {signal.get('iv_rank', 0):>10.1f}%                              ║
+║  ├─ RSI:        {signal.get('rsi', 0):>10.1f}                               ║
+║  ├─ Sideways:   {'Yes' if signal.get('is_sideways') else 'No':>10}                               ║
+║  └─ Squeeze:    {'⚠️ YES' if signal.get('squeeze') else 'No':>10}                               ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  📋 TRADE SETUP                                               ║
-║  ├─ SELL {signal['trade_setup']['sell_call']} CE                                       ║
-║  ├─ BUY  {signal['trade_setup']['buy_call']} CE                                       ║
-║  ├─ SELL {signal['trade_setup']['sell_put']} PE                                       ║
-║  └─ BUY  {signal['trade_setup']['buy_put']} PE                                       ║
+║  ├─ SELL {signal.get('trade_setup', {}).get('sell_call', 0)} CE                                       ║
+║  ├─ BUY  {signal.get('trade_setup', {}).get('buy_call', 0)} CE                                       ║
+║  ├─ SELL {signal.get('trade_setup', {}).get('sell_put', 0)} PE                                       ║
+║  └─ BUY  {signal.get('trade_setup', {}).get('buy_put', 0)} PE                                       ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  💰 RISK/REWARD                                               ║
-║  ├─ Max Profit: ₹{signal['trade_setup']['max_profit']:>10,}                              ║
-║  ├─ Max Loss:   ₹{signal['trade_setup']['max_loss']:>10,}                              ║
-║  └─ Range:      {signal['trade_setup']['breakeven_range']}                       ║
+║  ├─ Max Profit: ₹{signal.get('trade_setup', {}).get('max_profit', 0):>10,}                              ║
+║  ├─ Max Loss:   ₹{signal.get('trade_setup', {}).get('max_loss', 0):>10,}                              ║
+║  └─ Range:      {signal.get('trade_setup', {}).get('breakeven_range', 'N/A')}                       ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  ⚙️ RISK MANAGEMENT                                           ║
-║  ├─ {signal['risk_management']['target']:<56} ║
-║  ├─ {signal['risk_management']['stop_loss']:<56} ║
-║  └─ {signal['risk_management']['max_hold']:<56} ║
+║  ├─ {signal.get('risk_management', {}).get('target', 'N/A'):<56} ║
+║  ├─ {signal.get('risk_management', {}).get('stop_loss', 'N/A'):<56} ║
+║  └─ {signal.get('risk_management', {}).get('max_hold', 'N/A'):<56} ║
 ╚══════════════════════════════════════════════════════════════╝
         """)
         
         print("📝 Analysis:")
         for reason in signal['reasons']:
             print(f"   • {reason}")
-
-
-# Quick scan function
-def scan_nifty() -> Dict:
-    """Quick scan for Iron Condor opportunity."""
-    ic = NiftyIronCondor()
-    return ic.scan()
 
 
 if __name__ == "__main__":

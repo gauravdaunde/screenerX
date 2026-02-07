@@ -1,8 +1,38 @@
 from datetime import datetime
 import pandas as pd
+import os
+import sys
+import time
 import yfinance as yf
-from app.db.database import get_connection, log_trade, get_balance, close_trade_in_db
-from app.core.alerts import AlertBot  # Reuse for Telegram
+
+# Try imports
+try:
+    from app.db.database import get_connection, log_trade, get_balance, close_trade_in_db
+    from app.core.alerts import AlertBot  # Reuse for Telegram
+    from app.core.constants import SECURITY_IDS
+except ImportError:
+    # Append root if needed
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from app.db.database import get_connection, log_trade, get_balance, close_trade_in_db
+    from app.core.alerts import AlertBot
+    from app.core.constants import SECURITY_IDS
+
+from dhanhq import dhanhq
+from dotenv import load_dotenv
+
+# Load Env
+load_dotenv(".env")
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
+DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
+
+# Initialize Dhan
+dhan_client = None
+if DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN:
+    try:
+        dhan_client = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
+        dhan_client.base_url = "https://api.dhan.co/v2"
+    except Exception as e:
+        print(f"Dhan init error: {e}")
 
 # Configuration
 CAPITAL_STOCK = 100000.0  # Old Swing Strategy
@@ -107,26 +137,78 @@ def execute_trade(signal):
     alert_bot.send_message(msg)
 
 
+def fetch_current_price(symbol: str) -> float:
+    """
+    Fetch current price.
+    Primary: Dhan API (15m delay interval)
+    Fallback: Yahoo Finance (Live-ish)
+    """
+    price = 0.0
+    
+    # --- 1. Try Dhan ---
+    if dhan_client:
+        security_id = SECURITY_IDS.get(symbol)
+        if security_id:
+            try:
+                to_date = datetime.now().strftime('%Y-%m-%d')
+                from_date = (datetime.now() - pd.Timedelta(days=3)).strftime('%Y-%m-%d')
+                
+                # Use 15m interval (less data) but recent
+                res = dhan_client.intraday_minute_data(
+                    security_id=security_id,
+                    exchange_segment='NSE_EQ',
+                    instrument_type='EQUITY',
+                    from_date=from_date,
+                    to_date=to_date,
+                    interval=15 
+                )
+                
+                if res.get('status') == 'success' and res.get('data'):
+                    data = res['data']
+                    if data:
+                        last_candle = data[-1]
+                        price = float(last_candle.get('c', 0.0))
+                        if price > 0:
+                            return price
+            except Exception as e:
+                # print(f"Dhan price fetch failed: {e}")
+                pass
+    
+    # --- 2. Fallback to YFinance ---
+    try:
+        ticker = f"{symbol}.NS"
+        # Fast fetch
+        data = yf.download(ticker, period="1d", interval="1m", progress=False)
+        if not data.empty:
+             val = data['Close'].iloc[-1]
+             # Handle Series or scalar
+             if isinstance(val, pd.Series):
+                 val = val.iloc[0] # Should be scalar if iloc[-1] on Series, wait.
+                 # If DataFrame.iloc[-1] returns Series (row). ['Close'] returns scalar.
+                 # But new yfinance might return MultiIndex columns.
+                 pass
+             
+             # If MultiIndex columns (Price, Ticker)
+             if isinstance(data.columns, pd.MultiIndex):
+                 # Close -> Ticker
+                 # We need to access properly
+                 scalar = data['Close'].iloc[-1].values[0] if hasattr(data['Close'].iloc[-1], 'values') else data['Close'].iloc[-1]
+                 return float(scalar)
+             
+             return float(val)
+             
+    except Exception as e:
+        print(f"YFinance fallback failed for {symbol}: {e}")
+        
+    return 0.0
+
+
 def monitor_positions():
     """
     Real-Time Trade Management Loop
     ===============================
     
-    Monitors all open positions and handles exits based on their assigned strategy tag.
-    
-    Modes of Operation:
-    -------------------
-    1. **Standard Swing (Default)**:
-       - Simply checks if Price hits Fixed Target (TP) or Fixed Stop Loss (SL).
-       - Hard exit on either condition.
-       
-    2. **Smart Swing ('SWING_SMART')**:
-       - **Target Handling**: Does NOT exit immediately at Target (TP). Instead, logs "Target Hit" status and prepares for Trailing (Future V2 feature). Currently V1 exits at Target to lock in high probability wins.
-       - **Trailing Logic**: Designed to activate 1.5% trailing stop *only* after target is reached (to catch home runs).
-       - **Breakeven Logic**: Moves SL to Entry if price covers 70% of distance to target.
-       - **Time Exit**: Hard exit if trade held > 30 Days (Capital Rotation).
-       
-    Frequency: Runs every 2 minutes via Cron.
+    Monitors all open positions and handles exits.
     """
     trades = get_open_trades()
     if trades.empty:
@@ -134,6 +216,9 @@ def monitor_positions():
         return
 
     print(f"🔍 Monitoring {len(trades)} open positions...")
+    
+    if not dhan_client:
+         print("⚠️ Dhan Client not active. Relying on Fallbacks.")
     
     total_unrealized_pnl = 0.0
     
@@ -152,101 +237,60 @@ def monitor_positions():
         entry_price = row['entry_price']
         entry_date = pd.to_datetime(row['entry_time'])
         
-        # Fetch current price
-        try:
-            ticker = f"{symbol}.NS"
-            data = yf.download(ticker, period="1d", interval="15m", progress=False)
-            
-            if data is None or data.empty: 
-                print(f"No data for {symbol}")
-                continue
-                
-            close_data = data['Close'].iloc[-1]
-            current_price = float(close_data.item()) if hasattr(close_data, 'item') else float(close_data)
-            
-            # Calculate Unrealized PnL for this trade
-            qty = row['quantity']
-            # Assuming BUY triggers
-            trade_pnl = (current_price - entry_price) * qty
-            total_unrealized_pnl += trade_pnl
-            
-            exit_reason = None
-            
-            # ==========================================
-            # 🧠 SMART STRATEGY LOGIC
-            # ==========================================
-            if strategy == 'SWING_SMART':
-                # Time Exit (30 Days)
-                days_held = (datetime.now() - entry_date).days
-                if days_held >= SMART_MAX_HOLD_DAYS:
-                    exit_reason = f"MAX HOLD ({days_held} days)"
-                
-                else:
-                    # target_dist = abs(tp - entry_price)
-                    # current_profit = current_price - entry_price
-                    
-                    # 1. Breakeven Trigger (70% of Target)
-                    # We need to update SL in DB if not already done. 
-                    # For simplicity in this script, we check if price fell back to entry after hitting 70%
-                    # Ideally, we should update SL in DB. Here, we calculate dynamic SL on the fly or utilize a new DB column 'trailing_sl'
-                    # Let's assume 'sl' in DB is the Hard SL. 
-                    
-                    # To implement this stateless-ly without adding DB columns yet:
-                    # We check if Current Price < Entry AND High since Entry > (Entry + 70% Target)
-                    # Use 'High' of today is risky.
-                    # Best approach: Check live conditions.
-                    
-                    if current_price <= sl:
-                         exit_reason = "STOP LOSS HIT 🛑"
-                    
-                    # Trail Activation (After Target Hit)
-                    elif current_price >= tp:
-                         # We don't exit at TP. We let it run.
-                         # But we need to trail. 
-                         # Since we don't have 'trailing_sl' state in DB, we will enforce a HARD EXIT if price drops X% from Peak.
-                         # WITHOUT state, this is hard.
-                         # COMPROMISE for V1: 
-                         # If Price >= Target, Set SL to (Current Price - 1.5%) -> Update DB?
-                         # Let's use the 'tp' field as the 'Highest Price Seen' marker? No.
-                         
-                         # Simple Implementation for now:
-                         # If Price > TP, treated as "TARGET ZONE".
-                         # If it drops 1.5% from Day's High -> Exit? No, need swing high.
-                         
-                         # FALLBACK TO SOLID LOGIC:
-                         # 1. If Current Price >= TP: Mark as "Target Hit" (maybe update status or log).
-                         # 2. Real Trailing requires state.
-                         
-                         # Let's stick to the SIMPLIFIED Smart Logic for V1 without schema change:
-                         # Exit at TP for now until we add 'trailing_sl' column.
-                         # WAIT! User asked to "allocate 100k". 
-                         # Let's just use the OLD logic for now but with BETTER parameters if possible?
-                         # No, User wants specific logic.
-                         
-                         # Temporary: Treat TP as TP.
-                         exit_reason = "TARGET HIT 🎯 (Smart)" 
+        # Rate Limit Prevention (Dhan)
+        time.sleep(1)
 
-            # ==========================================
-            # 👴 OLD STRATEGY LOGIC
-            # ==========================================
-            else:
-                if current_price >= tp:
-                    exit_reason = "TARGET HIT 🎯"
-                elif current_price <= sl:
-                    exit_reason = "STOP LOSS HIT 🛑"
+        # Fetch current price
+        current_price = fetch_current_price(symbol)
             
-            # Execute Exit
-            if exit_reason:
-                pnl = close_trade_in_db(trade_id, current_price, exit_reason)
+        if current_price <= 0:
+            print(f"No price data for {symbol}")
+            continue
+            
+        # Calculate Unrealized PnL for this trade
+        qty = row['quantity']
+        # Assuming BUY triggers
+        trade_pnl = (current_price - entry_price) * qty
+        total_unrealized_pnl += trade_pnl
+        
+        exit_reason = None
+        
+        # ==========================================
+        # 🧠 SMART STRATEGY LOGIC
+        # ==========================================
+        if strategy == 'SWING_SMART':
+            # Time Exit (30 Days)
+            days_held = (datetime.now() - entry_date).days
+            if days_held >= SMART_MAX_HOLD_DAYS:
+                exit_reason = f"MAX HOLD ({days_held} days)"
+            
+            else:
+                if current_price <= sl:
+                        exit_reason = "STOP LOSS HIT 🛑"
                 
-                # Telegram Alert
-                emoji = "🟢" if pnl > 0 else "🔴"
-                strat_tag = " [SMART]" if strategy == 'SWING_SMART' else ""
-                msg = f"{exit_reason}{strat_tag}\n\n{emoji} Closed {symbol}\nPrice: {current_price}\nPnL: ₹{pnl:.2f}"
-                alert_bot.send_message(msg)
-                
-        except Exception as e:
-            print(f"Error checking {symbol}: {e}")
+                # Trail Activation (After Target Hit)
+                elif current_price >= tp:
+                        # Temporary: Treat TP as TP.
+                        exit_reason = "TARGET HIT 🎯 (Smart)" 
+
+        # ==========================================
+        # 👴 OLD STRATEGY LOGIC
+        # ==========================================
+        else:
+            if current_price >= tp:
+                exit_reason = "TARGET HIT 🎯"
+            elif current_price <= sl:
+                exit_reason = "STOP LOSS HIT 🛑"
+        
+        # Execute Exit
+        if exit_reason:
+            pnl = close_trade_in_db(trade_id, current_price, exit_reason)
+            
+            # Telegram Alert
+            emoji = "🟢" if pnl > 0 else "🔴"
+            strat_tag = " [SMART]" if strategy == 'SWING_SMART' else ""
+            msg = f"{exit_reason}{strat_tag}\n\n{emoji} Closed {symbol}\nPrice: {current_price}\nPnL: ₹{pnl:.2f}"
+            alert_bot.send_message(msg)
 
     # Log Portfolio Summary
     equity = get_balance() + total_unrealized_pnl

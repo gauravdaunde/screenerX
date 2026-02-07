@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Auto Trading System with Dhan API.
+Auto Trading System with Dhan API & YFinance Fallback.
 
 This module provides automated trading capabilities using the Dhan broker API.
 It scans for VWAP breakout signals and automatically places orders with
@@ -13,6 +13,7 @@ Features:
     - Telegram notifications for all order activities
     - Daily order limits and duplicate prevention
     - Supports both DRY RUN (paper trading) and LIVE modes
+    - Hybrid Data Fetching: Dhan API (Primary) -> YFinance (Fallback)
 
 Environment Variables Required:
     DHAN_CLIENT_ID: Your Dhan client ID
@@ -28,22 +29,32 @@ Usage:
     python auto_trader.py
 
 Author: Trading Strategy Screener
-Version: 1.0.0
+Version: 1.1.1
 """
 
 import os
+import sys
 import json
 import logging
 import requests
-from datetime import datetime, date
+import time
+from datetime import datetime
+import pandas as pd
+import yfinance as yf
 from typing import Dict, List, Optional, Tuple, Any
 
 from dhanhq import dhanhq
 from dotenv import load_dotenv
-import yfinance as yf
-import pandas as pd
 
 from strategies.vwap_breakout import VWAPStrategy
+
+# Import Constants
+try:
+    from app.core.constants import SECURITY_IDS
+except ImportError:
+    # Fallback if running standalone without app package context
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from app.core.constants import SECURITY_IDS
 
 # Configure logging
 logging.basicConfig(
@@ -80,57 +91,6 @@ class Config:
     # Files
     ORDERS_FILE: str = "placed_orders.json"
 
-
-# NSE Equity Security IDs for Dhan API
-SECURITY_IDS: Dict[str, str] = {
-    "RELIANCE": "2885",
-    "TCS": "11536",
-    "HDFCBANK": "1333",
-    "ICICIBANK": "4963",
-    "INFY": "1594",
-    "SBIN": "3045",
-    "ITC": "1660",
-    "BHARTIARTL": "10604",
-    "KOTAKBANK": "1922",
-    "LT": "11483",
-    "HCLTECH": "700",
-    "AXISBANK": "5900",
-    "ASIANPAINT": "236",
-    "MARUTI": "10999",
-    "SUNPHARMA": "3351",
-    "TITAN": "3506",
-    "ULTRACEMCO": "11532",
-    "BAJFINANCE": "317",
-    "WIPRO": "3787",
-    "NESTLEIND": "17963",
-    "TATAMOTORS": "3456",
-    "M&M": "2031",
-    "NTPC": "11630",
-    "POWERGRID": "14977",
-    "TECHM": "13538",
-    "TATASTEEL": "3499",
-    "ADANIENT": "25",
-    "ADANIPORTS": "15083",
-    "JSWSTEEL": "11723",
-    "ONGC": "2475",
-    "COALINDIA": "20374",
-    "BAJAJFINSV": "16675",
-    "HDFCLIFE": "467",
-    "DRREDDY": "881",
-    "DIVISLAB": "10940",
-    "GRASIM": "1232",
-    "CIPLA": "694",
-    "APOLLOHOSP": "157",
-    "BRITANNIA": "547",
-    "EICHERMOT": "910",
-    "SBILIFE": "21808",
-    "BPCL": "526",
-    "TATACONSUM": "3432",
-    "INDUSINDBK": "5258",
-    "HINDALCO": "1363",
-    "HEROMOTOCO": "1348",
-    "UPL": "11287"
-}
 
 # Default watchlist for auto-trading
 WATCHLIST: List[str] = [
@@ -261,7 +221,7 @@ class OrderTracker:
         if os.path.exists(self.orders_file):
             with open(self.orders_file, 'r') as f:
                 return json.load(f)
-        return {"orders": [], "today": str(date.today()), "count": 0}
+        return {"orders": [], "today": str(datetime.now().date()), "count": 0}
     
     def save(self, orders_data: Dict[str, Any]) -> None:
         """Save orders to file."""
@@ -282,8 +242,8 @@ class OrderTracker:
         orders_data = self.load()
         
         # Reset counter if new day
-        if orders_data.get("today") != str(date.today()):
-            orders_data = {"orders": [], "today": str(date.today()), "count": 0}
+        if orders_data.get("today") != str(datetime.now().date()):
+            orders_data = {"orders": [], "today": str(datetime.now().date()), "count": 0}
             self.save(orders_data)
         
         # Check daily limit
@@ -293,7 +253,7 @@ class OrderTracker:
         # Check if already traded this symbol today
         today_symbols = [
             o["symbol"] for o in orders_data["orders"] 
-            if o["date"] == str(date.today())
+            if o["date"] == str(datetime.now().date())
         ]
         if symbol in today_symbols:
             return False, "Already traded this symbol today"
@@ -324,7 +284,7 @@ class OrderTracker:
             "tp": tp,
             "quantity": quantity,
             "order_id": order_id,
-            "date": str(date.today()),
+            "date": str(datetime.now().date()),
             "time": datetime.now().strftime('%H:%M:%S')
         })
         orders_data["count"] = orders_data.get("count", 0) + 1
@@ -399,6 +359,7 @@ class DhanOrderExecutor:
         """
         try:
             self.dhan = dhanhq(self.client_id, self.access_token)
+            self.dhan.base_url = "https://api.dhan.co/v2"  # Ensure V2 base URL
             return True
         except Exception as e:
             logger.error(f"Failed to connect to Dhan: {e}")
@@ -450,7 +411,7 @@ class AutoTrader:
     Automated trading system that scans for signals and places orders.
     
     This class orchestrates the entire trading workflow:
-    1. Scans watchlist for trading signals
+    1. Scans watchlist for trading signals using Dhan Data
     2. Validates signals (freshness, duplicate checks)
     3. Calculates position size based on risk
     4. Places orders via Dhan API
@@ -475,10 +436,21 @@ class AutoTrader:
             config.DHAN_ACCESS_TOKEN
         )
         self.strategy = VWAPStrategy()
+        
+        # Initialize Dhan client for Data Fetching
+        self.dhan_data_client = None
+        if config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN:
+            try:
+                self.dhan_data_client = dhanhq(config.DHAN_CLIENT_ID, config.DHAN_ACCESS_TOKEN)
+                self.dhan_data_client.base_url = "https://api.dhan.co/v2"
+            except Exception as e:
+                logger.error(f"Dhan Data Client Init Error: {e}")
+
     
     def fetch_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """
-        Fetch historical data for a symbol.
+        Fetch historical data for a symbol. 
+        Strategy: Try Dhan API first -> Fallback to YFinance.
         
         Args:
             symbol: Stock symbol (without .NS suffix)
@@ -486,23 +458,74 @@ class AutoTrader:
         Returns:
             DataFrame with OHLCV data or None if failed
         """
+        # --- 1. Try Dhan ---
+        if self.dhan_data_client:
+            security_id = SECURITY_IDS.get(symbol)
+            if security_id:
+                try:
+                    to_date = datetime.now().strftime('%Y-%m-%d')
+                    from_date = (datetime.now() - pd.Timedelta(days=90)).strftime('%Y-%m-%d')
+                    
+                    res = self.dhan_data_client.historical_daily_data(
+                        security_id=security_id,
+                        exchange_segment='NSE_EQ',
+                        instrument_type='EQUITY',
+                        from_date=from_date,
+                        to_date=to_date
+                    )
+                    
+                    if res.get('status') == 'success' and res.get('data'):
+                        df = pd.DataFrame(res['data'])
+                        
+                        # Timestamp Parsing
+                        if 'start_Time' in df.columns:
+                             df['datetime'] = pd.to_datetime(df['start_Time'], unit='s')
+                        elif 'timestamp' in df.columns:
+                             df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+                        elif 'k' in df.columns:
+                             df['datetime'] = pd.to_datetime(df['k'], unit='s')
+                        else:
+                             raise ValueError("Timestamp not found in Dhan data")
+                             
+                        df = df.set_index('datetime')
+                        
+                        # Standardize Columns
+                        rename_map = {'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}
+                        df = df.rename(columns=rename_map)
+                        df = df[[c for c in ['open','high','low','close','volume'] if c in df.columns]].astype(float)
+                        
+                        if not df.empty and len(df) > 30:
+                            return df
+                            
+                except Exception as e:
+                    logger.warning(f"Dhan fetch failed for {symbol} (Reason: {e}). Trying YFinance fallback...")
+
+        # --- 2. Fallback to YFinance ---
         try:
+            # logger.info(f"Using YFinance fallback for {symbol}")
             ticker = f"{symbol}.NS"
-            data = yf.download(ticker, period="3mo", interval="1d", progress=False)
+            df = yf.download(ticker, period="3mo", interval="1d", progress=False)
             
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.get_level_values(0)
-            
-            if data.empty or len(data) < 30:
+            if df.empty:
                 return None
+                
+            # Formatting
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
             
-            df = data.copy()
-            df.columns = [c.lower() for c in df.columns]
-            return df
+            df.columns = [c.lower() for c in df.columns] # Open -> open
             
+            # Ensure index is datetime (yfinance usually is)
+            
+            if 'close' in df.columns:
+                 # Ensure proper types
+                 df = df.astype(float)
+                 return df
+                 
         except Exception as e:
-            logger.error(f"Data fetch error for {symbol}: {e}")
-            return None
+            logger.error(f"YFinance fallback failed for {symbol}: {e}")
+            
+        return None
     
     def process_signal(self, symbol: str, signal: Dict[str, Any]) -> Optional[str]:
         """
@@ -606,7 +629,7 @@ Order Details for {symbol}:
             Number of orders placed
         """
         print("=" * 60)
-        print("  🤖 AUTO-TRADING SYSTEM")
+        print("  🤖 AUTO-TRADING SYSTEM (Powered by DhanHQ + YF Fallback)")
         print("=" * 60)
         print(f"""
     ⚙️ Configuration:
@@ -630,6 +653,9 @@ Order Details for {symbol}:
         for symbol in watchlist:
             print(f"  Checking {symbol}...", end=" ")
             
+            # Rate Limit Prevention (Dhan)
+            time.sleep(1)
+            
             df = self.fetch_data(symbol)
             if df is None:
                 print("❌ No data")
@@ -640,8 +666,9 @@ Order Details for {symbol}:
             if signals:
                 last_signal = signals[-1]
                 sig_date = pd.Timestamp(last_signal['time']).date()
-                days_ago = (date.today() - sig_date).days
+                days_ago = (datetime.now().date() - sig_date).days
                 
+                # Check if signal is FRESH (today or yesterday)
                 if days_ago <= 1:
                     print(f"✅ {last_signal['action']} signal!")
                     signals_found.append({
@@ -692,12 +719,13 @@ Order Details for {symbol}:
 
 def main():
     """Main entry point for auto trader."""
+    import sys
     config = Config()
     trader = AutoTrader(config)
     
     # Startup notification
     trader.notifier.send(
-        f"🤖 <b>Auto-Trading System Started</b>\n\n"
+        f"🤖 <b>Auto-Trading System Started (DhanHQ + YF)</b>\n\n"
         f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"🔶 Mode: {'DRY RUN' if config.DRY_RUN else 'LIVE'}"
     )

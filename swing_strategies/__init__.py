@@ -1,3 +1,4 @@
+
 """
 Swing Trading Strategies Module
 
@@ -7,9 +8,15 @@ Inspired by CA Rachana Ranade's method
 Holding period: 2-10 days
 """
 
-import yfinance as yf
 import pandas as pd
 from typing import Dict, List, Optional
+import os
+import sys
+import time
+from datetime import datetime, timedelta
+from dhanhq import dhanhq
+from dotenv import load_dotenv
+import yfinance as yf
 
 from .supertrend_pivot import (
     supertrend_pivot_swing,
@@ -22,70 +29,130 @@ from .supertrend_pivot import (
     calculate_atr
 )
 
+# Load Env
+load_dotenv(".env")
+# Fallback to finding .env in root
+if not os.getenv("DHAN_CLIENT_ID"):
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+
+def get_dhan_client():
+    client_id = os.getenv("DHAN_CLIENT_ID")
+    access_token = os.getenv("DHAN_ACCESS_TOKEN")
+    if client_id and access_token:
+        try:
+            dhan = dhanhq(client_id, access_token)
+            dhan.base_url = "https://api.dhan.co/v2"
+            return dhan
+        except Exception as e:
+            print(f"Dhan Error: {e}")
+    return None
 
 def fetch_stock_data(symbol: str, period: str = "6mo") -> pd.DataFrame:
     """
-    Fetch daily OHLCV data from Yahoo Finance.
+    Fetch daily OHLCV data.
+    Primary: Dhan API
+    Fallback: Yahoo Finance (yfinance)
     
     Args:
         symbol: Stock symbol (without .NS suffix)
         period: Data period (default 6mo)
     
     Returns:
-        Daily OHLCV DataFrame
+        Daily OHLCV DataFrame (lowercase columns)
     """
-    if symbol.startswith("^"):
-        ticker = symbol
-    else:
-        ticker = f"{symbol}.NS"
+    df = pd.DataFrame()
+    
+    # --- 1. Try Dhan ---
     try:
-        # Suppress yfinance error output
-        import sys
-        import io
-        suppress_stdout = io.StringIO()
-        original_stdout = sys.stdout
-        sys.stdout = suppress_stdout
-        
+        # Import SECURITY_IDS locally to avoid circular import
         try:
-            df = yf.download(ticker, period=period, interval="1d", progress=False, threads=False)
-        finally:
-            sys.stdout = original_stdout
-        
-        if df.empty:
-            # Try BSE as fallback
-            ticker_bse = f"{symbol}.BO"
-            sys.stdout = suppress_stdout
-            try:
-                df = yf.download(ticker_bse, period=period, interval="1d", progress=False, threads=False)
-            finally:
-                sys.stdout = original_stdout
-            
-        if df.empty:
-             # print(f"⚠️ No data for {symbol}")
-             return pd.DataFrame()
+            from app.core.constants import SECURITY_IDS
+        except ImportError:
+            sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+            from app.core.constants import SECURITY_IDS
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        dhan = get_dhan_client()
+        security_id = SECURITY_IDS.get(symbol)
         
-        df.columns = [c.lower() for c in df.columns]
-        return df
-        
+        if dhan and security_id:
+            to_date = datetime.now().strftime('%Y-%m-%d')
+            # Map period to days. 6mo ~ 180 days. 1y ~ 365 days.
+            days = 180
+            if period == "1y":
+                days = 365
+            elif period == "3mo":
+                days = 90
+            elif period == "1mo":
+                 days = 30
+                 
+            from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            
+            res = dhan.historical_daily_data(
+                security_id=security_id,
+                exchange_segment='NSE_EQ',
+                instrument_type='EQUITY',
+                from_date=from_date,
+                to_date=to_date
+            )
+            
+            if res.get('status') == 'success' and res.get('data'):
+                df_dhan = pd.DataFrame(res['data'])
+                
+                # Consistent timestamp parsing
+                if 'start_Time' in df_dhan.columns:
+                     df_dhan['datetime'] = pd.to_datetime(df_dhan['start_Time'], unit='s')
+                elif 'timestamp' in df_dhan.columns:
+                     df_dhan['datetime'] = pd.to_datetime(df_dhan['timestamp'], unit='s')
+                elif 'k' in df_dhan.columns:
+                     df_dhan['datetime'] = pd.to_datetime(df_dhan['k'], unit='s')
+                else:
+                     raise ValueError("Timestamp missing in Dhan response")
+                     
+                df_dhan = df_dhan.set_index('datetime')
+                
+                rename_map = {'o':'open','h':'high','l':'low','c':'close','v':'volume'}
+                df_dhan = df_dhan.rename(columns=rename_map)
+                
+                # Lowercase columns
+                df_dhan.columns = [c.lower() for c in df_dhan.columns]
+                
+                req = ['open','high','low','close']
+                df_dhan = df_dhan[[c for c in req if c in df_dhan.columns]].astype(float)
+                
+                # Success checks
+                if not df_dhan.empty and len(df_dhan) > 20:
+                    return df_dhan
+
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
-        return pd.DataFrame()
+        # print(f"Dhan fetch failed for {symbol}: {e}. Trying fallback...")
+        pass
+
+    # --- 2. Fallback to YFinance ---
+    try:
+        ticker = f"{symbol}.NS"
+        df_yf = yf.download(ticker, period=period, interval="1d", progress=False)
+        
+        if not df_yf.empty:
+            # Flatten MultiIndex if present
+            if isinstance(df_yf.columns, pd.MultiIndex):
+                df_yf.columns = df_yf.columns.get_level_values(0)
+                
+            df_yf.columns = [c.lower() for c in df_yf.columns]
+            
+            # Ensure proper index (Wait, yf.download usually sets Date index)
+            # Just ensure types
+            req = ['open','high','low','close']
+            if all(c in df_yf.columns for c in req):
+                return df_yf.astype(float)
+                
+    except Exception as e:
+        print(f"YFinance fallback failed for {symbol}: {e}")
+
+    return pd.DataFrame()
 
 
 def scan_symbol(symbol: str, period: str = "6mo") -> Optional[Dict]:
-    """
-    Fetch data and scan single symbol for signals.
-    
-    Args:
-        symbol: Stock symbol
-        period: Data period
-    
-    Returns:
-        Signal dict if found, else None
-    """
+    """Fetch data and scan single symbol for signals."""
     df = fetch_stock_data(symbol, period)
     
     if df.empty or len(df) < 50:
@@ -95,19 +162,13 @@ def scan_symbol(symbol: str, period: str = "6mo") -> Optional[Dict]:
 
 
 def scan_stocks(symbols: List[str], period: str = "6mo") -> List[Dict]:
-    """
-    Scan multiple stocks and return actionable signals.
-    
-    Args:
-        symbols: List of stock symbols
-        period: Data period
-    
-    Returns:
-        List of signals sorted by confidence
-    """
+    """Scan multiple stocks and return actionable signals."""
     signals = []
     
     for symbol in symbols:
+        # Rate Limit
+        time.sleep(1)
+        
         try:
             signal = scan_symbol(symbol, period)
             if signal:
@@ -116,23 +177,12 @@ def scan_stocks(symbols: List[str], period: str = "6mo") -> List[Dict]:
             print(f"Error scanning {symbol}: {e}")
             continue
     
-    # Sort by confidence
     signals.sort(key=lambda x: x['confidence'], reverse=True)
-    
     return signals
 
 
 def analyze_stock(symbol: str, period: str = "6mo") -> Dict:
-    """
-    Get detailed market analysis for a stock.
-    
-    Args:
-        symbol: Stock symbol
-        period: Data period
-    
-    Returns:
-        Full analysis dict
-    """
+    """Get detailed market analysis for a stock."""
     df = fetch_stock_data(symbol, period)
     
     if df.empty or len(df) < 50:
