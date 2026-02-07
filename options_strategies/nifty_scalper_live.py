@@ -7,8 +7,6 @@ import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime, timedelta
-from dhanhq import dhanhq
-from dotenv import load_dotenv
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -24,16 +22,8 @@ class NiftyScalperLive:
     Strategy: 5-min EMA Pullback Trend Following (Jackpot Hunt RR 3.0).
     """
     def __init__(self):
-        load_dotenv(".env")
-        self.client_id = os.getenv("DHAN_CLIENT_ID")
-        self.access_token = os.getenv("DHAN_ACCESS_TOKEN")
-        
-        try:
-            self.dhan = dhanhq(self.client_id, self.access_token)
-            self.dhan.base_url = "https://api.dhan.co/v2" # FORCE PROD URL
-        except Exception as e:
-            logging.error(f"Dhan Init Error: {e}")
-            self.dhan = None
+        from app.core.dhan_client import get_dhan_client
+        self.dhan = get_dhan_client()
         
         # CONFIG: NIFTY SPOT INDEX
         self.security_id = '13' 

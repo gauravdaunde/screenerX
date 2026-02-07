@@ -9,24 +9,15 @@ sys.path.append(os.getcwd())
 import logging
 from datetime import datetime, timedelta
 import pandas as pd
-from dhanhq import dhanhq
-from dotenv import load_dotenv
+
 
 from app.db.database import ensure_wallet_exists, log_trade, get_connection
 from app.core.alerts import AlertBot
 from options_strategies.core import IndexConfig, IronCondor, BullCallSpread, BearPutSpread, OptionPricer
-from app.core import config
-
-# Load Env
-load_dotenv(".env")
+from app.core.dhan_client import get_dhan_client
 
 # Init Dhan
-dhan_client = None
-try:
-    dhan_client = dhanhq(os.getenv("DHAN_CLIENT_ID"), os.getenv("DHAN_ACCESS_TOKEN"))
-    dhan_client.base_url = "https://api.dhan.co/v2" 
-except Exception as e:
-    logging.error(f"Dhan init failed: {e}")
+dhan_client = get_dhan_client()
 
 def get_next_expiry(symbol: str) -> str:
     today = datetime.now()
@@ -184,7 +175,7 @@ class LiveDataManager:
             logging.error(f"Data error {cfg.symbol}: {e}")
             return pd.DataFrame()
 
-def calculate_pnl_update(trade_row, current_spot, current_vix, strategy_obj, config):
+def calculate_pnl_update(trade_row, current_spot, current_vix, strategy_obj, cfg):
     try:
         entry_price = trade_row[2]
         qty = trade_row[3]
@@ -204,17 +195,17 @@ def calculate_pnl_update(trade_row, current_spot, current_vix, strategy_obj, con
         if strategy_obj.name == "Iron Condor":
             base = anchor_strike
             legs = [
-                {'strike': base + config.wing_dist, 'type': 'CE', 'side': 'SELL'},
-                {'strike': base - config.wing_dist, 'type': 'PE', 'side': 'SELL'},
-                {'strike': base + config.wing_dist + config.width, 'type': 'CE', 'side': 'BUY'},
-                {'strike': base - config.wing_dist - config.width, 'type': 'PE', 'side': 'BUY'}
+                {'strike': base + cfg.wing_dist, 'type': 'CE', 'side': 'SELL'},
+                {'strike': base - cfg.wing_dist, 'type': 'PE', 'side': 'SELL'},
+                {'strike': base + cfg.wing_dist + cfg.width, 'type': 'CE', 'side': 'BUY'},
+                {'strike': base - cfg.wing_dist - cfg.width, 'type': 'PE', 'side': 'BUY'}
             ]
         elif strategy_obj.name == "Bull Call Spread":
             base = anchor_strike
-            legs = [{'strike': base, 'type': 'CE', 'side': 'BUY'}, {'strike': base + config.width, 'type': 'CE', 'side': 'SELL'}]
+            legs = [{'strike': base, 'type': 'CE', 'side': 'BUY'}, {'strike': base + cfg.width, 'type': 'CE', 'side': 'SELL'}]
         elif strategy_obj.name == "Bear Put Spread":
             base = anchor_strike
-            legs = [{'strike': base, 'type': 'PE', 'side': 'BUY'}, {'strike': base - config.width, 'type': 'PE', 'side': 'SELL'}]
+            legs = [{'strike': base, 'type': 'PE', 'side': 'BUY'}, {'strike': base - cfg.width, 'type': 'PE', 'side': 'SELL'}]
 
         exit_cash_flow = 0
         for leg in legs:
@@ -229,7 +220,7 @@ def calculate_pnl_update(trade_row, current_spot, current_vix, strategy_obj, con
 
         invested = 0
         if entry_cash_flow < 0: invested = abs(entry_cash_flow) * qty
-        else: invested = config.width * qty
+        else: invested = cfg.width * qty
         
         pnl_pct = 0.0
         if invested > 0: pnl_pct = (total_pnl / invested) * 100

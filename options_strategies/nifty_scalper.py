@@ -9,13 +9,8 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-from dhanhq import dhanhq
-from dotenv import load_dotenv
 
-# Load Env
-load_dotenv(".env")
-if not os.getenv("DHAN_CLIENT_ID"):
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 
 @dataclass
 class ScalpSignal:
@@ -41,12 +36,10 @@ class NiftyScalper:
         self.risk_reward = 1.5
         
         # Init Dhan
-        try:
-            self.dhan = dhanhq(os.getenv("DHAN_CLIENT_ID"), os.getenv("DHAN_ACCESS_TOKEN"))
-            self.dhan.base_url = "https://api.dhan.co/v2"
-        except Exception as e:
-            print(f"Dhan init error: {e}")
-            self.dhan = None
+        # Add project root to path
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+        from app.core.dhan_client import get_dhan_client
+        self.dhan = get_dhan_client()
         
     def fetch_data(self) -> pd.DataFrame:
         if not self.dhan:

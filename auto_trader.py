@@ -43,10 +43,12 @@ import pandas as pd
 import yfinance as yf
 from typing import Dict, List, Optional, Tuple, Any
 
-from dhanhq import dhanhq
+
 from dotenv import load_dotenv
 
 from strategies.vwap_breakout import VWAPStrategy
+
+from app.core.dhan_client import get_dhan_client
 
 # Import Constants
 try:
@@ -338,17 +340,11 @@ def calculate_quantity(entry_price: float, sl_price: float,
 class DhanOrderExecutor:
     """Handles order execution via Dhan API."""
     
-    def __init__(self, client_id: str, access_token: str):
+    def __init__(self):
         """
         Initialize Dhan order executor.
-        
-        Args:
-            client_id: Dhan client ID
-            access_token: Dhan API access token
         """
-        self.client_id = client_id
-        self.access_token = access_token
-        self.dhan = None
+        self.dhan = get_dhan_client()
     
     def connect(self) -> bool:
         """
@@ -357,10 +353,12 @@ class DhanOrderExecutor:
         Returns:
             True if connected successfully
         """
-        try:
-            self.dhan = dhanhq(self.client_id, self.access_token)
-            self.dhan.base_url = "https://api.dhan.co/v2"  # Ensure V2 base URL
+        if self.dhan:
             return True
+            
+        try:
+            self.dhan = get_dhan_client()
+            return self.dhan is not None
         except Exception as e:
             logger.error(f"Failed to connect to Dhan: {e}")
             return False
@@ -431,20 +429,11 @@ class AutoTrader:
             config.TELEGRAM_CHAT_ID
         )
         self.tracker = OrderTracker(config.ORDERS_FILE)
-        self.executor = DhanOrderExecutor(
-            config.DHAN_CLIENT_ID,
-            config.DHAN_ACCESS_TOKEN
-        )
+        self.executor = DhanOrderExecutor()
         self.strategy = VWAPStrategy()
         
         # Initialize Dhan client for Data Fetching
-        self.dhan_data_client = None
-        if config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN:
-            try:
-                self.dhan_data_client = dhanhq(config.DHAN_CLIENT_ID, config.DHAN_ACCESS_TOKEN)
-                self.dhan_data_client.base_url = "https://api.dhan.co/v2"
-            except Exception as e:
-                logger.error(f"Dhan Data Client Init Error: {e}")
+        self.dhan_data_client = get_dhan_client()
 
     
     def fetch_data(self, symbol: str) -> Optional[pd.DataFrame]:

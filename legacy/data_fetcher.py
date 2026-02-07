@@ -1,5 +1,5 @@
 import pandas as pd
-from dhanhq import dhanhq
+
 import logging
 from datetime import datetime, timedelta
 import config
@@ -16,12 +16,13 @@ class DhanFetcher:
         
         # Initialize Dhan client
         try:
-            # Check if secrets are default placeholders
-            if self.client_id == "YOUR_CLIENT_ID":
-                self.logger.warning("Dhan Credentials not set. API calls will fail.")
-            else:
-                self.dhan = dhanhq(self.client_id, self.access_token)
-                # NOTE: The dhanhq library has been patched to use https://sandbox.dhan.co/v2
+            import sys
+            # Add project root to path
+            sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+            from app.core.dhan_client import get_dhan_client
+            
+            self.dhan = get_dhan_client()
+            if self.dhan:
                 self.load_security_list()
         except Exception as e:
             self.logger.error(f"Failed to init DhanHQ: {e}")

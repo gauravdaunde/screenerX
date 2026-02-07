@@ -14,8 +14,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from dhanhq import dhanhq
-from dotenv import load_dotenv
+
 import yfinance as yf
 
 from .supertrend_pivot import (
@@ -29,23 +28,9 @@ from .supertrend_pivot import (
     calculate_atr
 )
 
-# Load Env
-load_dotenv(".env")
-# Fallback to finding .env in root
-if not os.getenv("DHAN_CLIENT_ID"):
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-
-def get_dhan_client():
-    client_id = os.getenv("DHAN_CLIENT_ID")
-    access_token = os.getenv("DHAN_ACCESS_TOKEN")
-    if client_id and access_token:
-        try:
-            dhan = dhanhq(client_id, access_token)
-            dhan.base_url = "https://api.dhan.co/v2"
-            return dhan
-        except Exception as e:
-            print(f"Dhan Error: {e}")
-    return None
+# Add project root to path for imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from app.core.dhan_client import get_dhan_client
 
 def fetch_stock_data(symbol: str, period: str = "6mo") -> pd.DataFrame:
     """

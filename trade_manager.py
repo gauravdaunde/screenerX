@@ -17,22 +17,10 @@ except ImportError:
     from app.core.alerts import AlertBot
     from app.core.constants import SECURITY_IDS
 
-from dhanhq import dhanhq
-from dotenv import load_dotenv
 
-# Load Env
-load_dotenv(".env")
-DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
-DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
 
-# Initialize Dhan
-dhan_client = None
-if DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN:
-    try:
-        dhan_client = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
-        dhan_client.base_url = "https://api.dhan.co/v2"
-    except Exception as e:
-        print(f"Dhan init error: {e}")
+from app.core.dhan_client import get_dhan_client
+dhan_client = get_dhan_client()
 
 # Configuration
 CAPITAL_STOCK = 100000.0  # Old Swing Strategy
