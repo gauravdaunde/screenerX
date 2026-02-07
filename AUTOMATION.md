@@ -29,15 +29,23 @@ Runs a continuous loop regardless of crontab.
 nohup ./venv/bin/python3 options_strategies/nifty_scalper_live.py >> scalper.log 2>&1 &
 ```
 
-## 3. How to Setup
+## 3. Log Monitoring (Safety Net)
+To check all logs for errors every 15 minutes and alert your Telegram Bot:
+
+```bash
+# Run log monitor every 15 mins (24/7)
+*/15 * * * * cd /Users/gaurav/Documents/code/personal/screener && ./venv/bin/python3 scripts/monitor_logs.py >> monitor.log 2>&1
+```
+
+## 4. How to Setup
 1. Open crontab:
    ```bash
    crontab -e
    ```
-2. Paste the **UTC Optimized** lines above.
+2. Paste the **UTC Optimized** lines and the **Log Monitoring** line above.
 3. Save and exit (`:wq` in vim).
 
-## 4. Verify
+## 5. Verify
 List your cron jobs:
 ```bash
 crontab -l
@@ -47,3 +55,5 @@ crontab -l
 - Swing Scanner: `scanner.log`
 - Scalper (Cron): `scalper_cron.log`
 - Scalper (Live): `scalper.log`
+- API Errors: `screener_api.log`
+- Monitor Health: `monitor.log`
