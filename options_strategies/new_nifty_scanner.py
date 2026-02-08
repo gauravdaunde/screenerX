@@ -56,11 +56,11 @@ class JackpotStrictStrategy:
 
     Execution Parameters:
     ---------------------
-    - Risk:Reward: 1:3.
+    - Risk:Reward: 1:2.
     - Stop Loss: 1.0 * ATR offset from the signal candle extremes.
     """
     
-    def __init__(self, risk_reward=3.0, atr_mult=1.0):
+    def __init__(self, risk_reward=2.0, atr_mult=1.0):
         self.risk_reward = risk_reward
         self.atr_mult = atr_mult
 
@@ -94,7 +94,8 @@ class JackpotStrictStrategy:
                  if adx > 20 and 60 <= rsi <= 75:
                      sl = low - (entr_atr * self.atr_mult)
                      risk = close - sl
-                     if risk < 10: risk = 10 # Min point floor
+                     if risk < 10:
+                        risk = 10 # Min point floor
                      tp = close + (risk * self.risk_reward)
                      
                      return {
@@ -113,7 +114,8 @@ class JackpotStrictStrategy:
                  if adx > 20 and 25 <= rsi <= 40:
                      sl = high + (entr_atr * self.atr_mult)
                      risk = sl - close
-                     if risk < 10: risk = 10
+                     if risk < 10:
+                        risk = 10
                      tp = close - (risk * self.risk_reward)
                      
                      return {
@@ -143,10 +145,10 @@ class JackpotNormalStrategy:
 
     Execution Parameters:
     ---------------------
-    - Risk:Reward: 1:3.
+    - Risk:Reward: 1:2.
     """
     
-    def __init__(self, risk_reward=3.0, atr_mult=1.0):
+    def __init__(self, risk_reward=2.0, atr_mult=1.5):
         self.risk_reward = risk_reward
         self.atr_mult = atr_mult
 
@@ -173,7 +175,8 @@ class JackpotNormalStrategy:
                  if adx > 20 and 50 <= rsi <= 75:
                      sl = low - (entr_atr * self.atr_mult)
                      risk = close - sl
-                     if risk < 10: risk = 10
+                     if risk < 10:
+                        risk = 10
                      tp = close + (risk * self.risk_reward)
                      
                      return {
@@ -191,7 +194,8 @@ class JackpotNormalStrategy:
                  if adx > 20 and 25 <= rsi <= 50:
                      sl = high + (entr_atr * self.atr_mult)
                      risk = sl - close
-                     if risk < 10: risk = 10
+                     if risk < 10:
+                        risk = 10
                      tp = close - (risk * self.risk_reward)
                      
                      return {
@@ -201,6 +205,67 @@ class JackpotNormalStrategy:
                          "confidence": 75,
                          "reason": "Normal Bearish: Standard RSI Breakout"
                      }
+        return None
+
+# =============================================================================
+# STRATEGY 3: EMA CROSSOVER SCALPER (Optimized)
+# =============================================================================
+class EMACrossoverScalperStrategy:
+    """
+    Optimized 9/15 EMA Crossover. 
+    Uses 15-degree angle and filters out exhaustion candles.
+    """
+    def __init__(self, tp_pct=0.3, sl_pct=0.15, angle_thresh=15):
+        self.tp_pct = tp_pct
+        self.sl_pct = sl_pct
+        self.angle_thresh = angle_thresh
+
+    def check_signal(self, df: pd.DataFrame, idx: int) -> Optional[Dict]:
+        if idx < 1: return None
+        row = df.iloc[idx]
+        prev_row = df.iloc[idx-1]
+        
+        # EMA crossover logic
+        bull_cross = prev_row['ema_9'] <= prev_row['ema_15'] and row['ema_9'] > row['ema_15']
+        bear_cross = prev_row['ema_9'] >= prev_row['ema_15'] and row['ema_9'] < row['ema_15']
+        
+        # Angle calc
+        ema_diff = row['ema_9'] - prev_row['ema_9']
+        angle = np.degrees(np.arctan(ema_diff / 1.0))
+        
+        # Candle classification (Simplified for scanner)
+        def get_c_type(c):
+            body = abs(c['close'] - c['open'])
+            total = c['high'] - c['low']
+            if total == 0: return "NA"
+            body_pct = (body / total) * 100
+            if body_pct > 80: return "MOST"
+            if body_pct > 50: return "NORMAL"
+            return "SMALL"
+
+        c_type = get_c_type(row)
+
+        if bull_cross and angle > self.angle_thresh:
+            if c_type in ["NORMAL"]: # Optimized to avoid MOST (exhaustion)
+                entry = row['close']
+                return {
+                    "action": "ENTER_LONG",
+                    "sl": entry * (1 - self.sl_pct/100),
+                    "tp": entry * (1 + self.tp_pct/100),
+                    "confidence": 80,
+                    "reason": f"EMA Cross + Angle {angle:.1f} (Normal Green)"
+                }
+        
+        if bear_cross and angle < -self.angle_thresh:
+            if c_type in ["NORMAL"]:
+                entry = row['close']
+                return {
+                    "action": "ENTER_SHORT",
+                    "sl": entry * (1 + self.sl_pct/100),
+                    "tp": entry * (1 - self.tp_pct/100),
+                    "confidence": 80,
+                    "reason": f"EMA Cross + Angle {angle:.1f} (Normal Red)"
+                }
         return None
 
 # =============================================================================
@@ -220,7 +285,8 @@ class NiftyScalper:
         # Strategies
         self.strategies = [
             JackpotStrictStrategy(risk_reward=3.0),
-            JackpotNormalStrategy(risk_reward=3.0)
+            JackpotNormalStrategy(risk_reward=3.0),
+            EMACrossoverScalperStrategy()
         ]
         
         # Init Dhan
@@ -267,7 +333,7 @@ class NiftyScalper:
         """Calculates indicators used by the strategies."""
         if df.empty: return df
         # EMAs
-        for s in [20, 50, 200]: 
+        for s in [9, 15, 20, 50, 200]: 
             df[f'ema_{s}'] = df['close'].ewm(span=s, adjust=False).mean()
         # RSI 14
         delta = df['close'].diff()
@@ -298,14 +364,19 @@ class NiftyScalper:
              return ScalpSignal(datetime.now().isoformat(), self.symbol, "WAIT", "NONE", 0, 0, 0, 0, ["Insufficient Historical Data"])
             
         df = self.calculate_indicators(df)
-        last_candle = df.iloc[-1]
+        last_idx = len(df) - 1
+        last_candle = df.iloc[last_idx]
         
         if pd.isna(last_candle['adx']):
              return ScalpSignal(datetime.now().isoformat(), self.symbol, "WAIT", "NONE", 0, 0, 0, 0, ["Indicators Warming Up"])
 
         # Check strategies in order of priority (Strict first)
         for strategy in self.strategies:
-            res = strategy.check_signal(last_candle)
+            if isinstance(strategy, EMACrossoverScalperStrategy):
+                res = strategy.check_signal(df, last_idx)
+            else:
+                res = strategy.check_signal(last_candle)
+                
             if res:
                 s_name = strategy.__class__.__name__.replace("Strategy", "").upper()
                 return ScalpSignal(

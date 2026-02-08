@@ -4,7 +4,9 @@ import sys
 import os
 import time
 import requests
-from datetime import datetime
+
+
+
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -55,9 +57,7 @@ class NiftyScalperLive:
 
     def manage_positions(self, current_price):
         """
-        Monitors active positions for SL/TP hits.
-        Args:
-            current_price (float): Latest spot price of Nifty.
+        Monitors active positions for SL/TP hits with optimized trailing logic.
         """
         if not self.active_positions:
             return
@@ -66,20 +66,56 @@ class NiftyScalperLive:
             exit_reason = None
             pnl_pts = 0
             
+            # Calculate current favor/move
             if pos['type'] == 'ENTER_LONG':
+                fav = current_price - pos['entry']
+                risk = pos['risk']
+                
+                # Update Max Reached
+                pos['max_fav'] = max(pos['max_fav'], fav)
+                
+                # 1. TRAIL SL to BE: If price moves 1.2R in favor
+                if fav >= (risk * 1.2) and not pos['trail_sl_active']:
+                    pos['sl'] = pos['entry'] + 5 # Break-even buffer
+                    pos['trail_sl_active'] = True
+                    self.send_telegram(f"🛡️ *Trailing SL*: `{pos['strat']}` SL moved to BE (+5 pts)")
+
+                # 2. JACKPOT TRAIL: If price moves 2.5R in favor
+                if fav >= (risk * 2.5):
+                    new_sl = pos['entry'] + (fav * 0.5) # Lock 50% of total unrealized move
+                    if new_sl > pos['sl']:
+                        pos['sl'] = new_sl
+                        # No need to send telegram every minute, let it trail silently
+
+                # Check Exit
                 if current_price <= pos['sl']:
-                    exit_reason = "STOP LOSS HIT 🛑"
+                    exit_reason = "STOP LOSS / TRAIL HIT 🛑"
                     pnl_pts = pos['sl'] - pos['entry']
-                elif current_price >= pos['tp']:
-                    exit_reason = "TARGET HIT 🎯 (3.0R)"
+                elif current_price >= pos['tp'] and fav < (risk * 2.5):
+                    # Exit at initial TP only if we haven't entered Jackpot mode
+                    exit_reason = "TARGET HIT 🎯"
                     pnl_pts = pos['tp'] - pos['entry']
             
-            elif pos['type'] == 'ENTER_SHORT':
+            else: # ENTER_SHORT
+                fav = pos['entry'] - current_price
+                risk = pos['risk']
+                pos['max_fav'] = max(pos['max_fav'], fav)
+                
+                if fav >= (risk * 1.2) and not pos['trail_sl_active']:
+                    pos['sl'] = pos['entry'] - 5
+                    pos['trail_sl_active'] = True
+                    self.send_telegram(f"🛡️ *Trailing SL*: `{pos['strat']}` SL moved to BE (-5 pts)")
+
+                if fav >= (risk * 2.5):
+                    new_sl = pos['entry'] - (fav * 0.5)
+                    if new_sl < pos['sl']:
+                        pos['sl'] = new_sl
+
                 if current_price >= pos['sl']:
-                    exit_reason = "STOP LOSS HIT 🛑"
+                    exit_reason = "STOP LOSS / TRAIL HIT 🛑"
                     pnl_pts = pos['entry'] - pos['sl']
-                elif current_price <= pos['tp']:
-                    exit_reason = "TARGET HIT 🎯 (3.0R)"
+                elif current_price <= pos['tp'] and fav < (risk * 2.5):
+                    exit_reason = "TARGET HIT 🎯"
                     pnl_pts = pos['entry'] - pos['tp']
             
             if exit_reason:
@@ -116,14 +152,13 @@ class NiftyScalperLive:
                 
                 # 3. Only scan for new entries if we have room
                 if len(self.active_positions) < self.max_parallel_trades:
-                    # Indirectly run scan by calling it on the scanner
-                    # But since we already have data, we can optimize later, 
-                    # but for now let's use the scanner.scan() for consistency
                     signal = self.scanner.scan()
                     
                     if signal.action != "WAIT" and signal.timestamp not in self.processed_timestamps:
                         # New Entry Found
                         self.processed_timestamps.add(signal.timestamp)
+                        
+                        risk = abs(signal.entry_price - signal.stop_loss)
                         
                         # Add to active positions
                         new_pos = {
@@ -131,6 +166,9 @@ class NiftyScalperLive:
                             'entry': signal.entry_price,
                             'sl': signal.stop_loss,
                             'tp': signal.target,
+                            'risk': risk,
+                            'max_fav': 0,
+                            'trail_sl_active': False,
                             'strat': signal.strategy_name,
                             'ts': signal.timestamp
                         }
